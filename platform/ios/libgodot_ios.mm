@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  libgodot_macos.mm                                                     */
+/*  libgodot_ios.mm                                                       */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,14 +28,22 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#include "os_macos.h"
+// Unlike platform/macos/libgodot_macos.mm, this does not need to choose between OS subclasses:
+// OS_IOS's constructor has no UIApplication/UIViewController dependency (unlike
+// DisplayServerAppleEmbedded's constructor, which does), so the same OS_IOS works whether the
+// "iOS" (on-screen, requires a live UIApplication driven via main_ios.mm) or "offscreen"
+// display driver ends up being selected by --display-driver/--offscreen. A host embedding
+// Godot via this API is expected to use --offscreen; it owns its own UIApplication/UIWindow
+// already, same as this file's macOS counterpart avoids touching NSApplication.
+
+#import "os_ios.h"
 
 #include "core/extension/godot_instance.h"
 #include "core/extension/libgodot.h"
 #include "core/extension/libgodot_helpers.h"
 #include "main/main.h"
 
-static OS_MacOS *os = nullptr;
+static OS_IOS *os = nullptr;
 
 static GodotInstance *instance = nullptr;
 
@@ -45,28 +53,15 @@ GDExtensionObjectPtr libgodot_create_godot_instance(int p_argc, char *p_argv[], 
 	uint32_t remaining_args = p_argc - 1;
 	char **args = remaining_args > 0 ? &p_argv[1] : nullptr;
 
-	// If the host passed `--offscreen`, render into a native GPU surface (IOSurface) that the
-	// host can consume directly instead of Godot creating its own `NSWindow`/`NSApplication`
-	// UI. This is the path host apps should use to embed Godot into their own view hierarchy.
-	bool is_offscreen = false;
-	for (uint32_t i = 0; i < remaining_args; i++) {
-		if (strcmp("--offscreen", args[i]) == 0) {
-			is_offscreen = true;
-			break;
-		}
-	}
-
-	if (is_offscreen) {
-		os = new OS_MacOS_Offscreen(p_argv[0], remaining_args, args);
-	} else {
-		os = new OS_MacOS_NSApp(p_argv[0], remaining_args, args);
-	}
+	os = new OS_IOS();
 
 	@autoreleasepool {
 		Error err = Main::setup(p_argv[0], remaining_args, args, false);
 		if (err != OK) {
 			return nullptr;
 		}
+
+		os->initialize_modules();
 
 		instance = memnew(GodotInstance);
 		if (!instance->initialize(p_init_func)) {

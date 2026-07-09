@@ -1511,10 +1511,10 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 			goto error;
 #endif
 		} else if (arg == "--offscreen") { // Enable offscreen rendering mode, for embedding via libgodot.
-#ifdef MACOS_ENABLED
+#if defined(MACOS_ENABLED) || defined(IOS_ENABLED) || defined(LINUXBSD_ENABLED)
 			display_driver = OFFSCREEN_DISPLAY_DRIVER;
 #else
-			OS::get_singleton()->print("--offscreen is only supported on macOS, aborting.\n");
+			OS::get_singleton()->print("--offscreen is only supported on macOS, iOS, and Linux, aborting.\n");
 			goto error;
 #endif
 		} else if (arg == "--log-file") { // write to log file

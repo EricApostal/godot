@@ -81,8 +81,11 @@ public:
 	// Invoked (from an internal Metal command buffer completion handler, on a Metal-owned
 	// thread) once a frame rendered into an offscreen surface is ready for the host
 	// application to consume. `p_surface` is owned by the surface and is reused for future
-	// frames; the host must bracket any access to it with `IOSurfaceIncrementUseCount`/
-	// `IOSurfaceDecrementUseCount` so the surface isn't rewritten by Godot while still in use.
+	// frames (a fixed-size ring, see SurfaceIOSurface); the engine does not wait for the host
+	// to finish reading a buffer before reusing its ring slot. A host that needs a stronger
+	// guarantee against tearing should bracket its reads with `IOSurfaceIncrementUseCount`/
+	// `IOSurfaceDecrementUseCount` and/or size the ring generously via
+	// `WindowPlatformData::offscreen_buffer_count`.
 	typedef void (*OffscreenPresentCallback)(void *p_userdata, IOSurfaceRef p_surface, uint32_t p_width, uint32_t p_height);
 
 	// Platform-specific data for the Windows embedded in this driver.

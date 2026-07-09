@@ -46,6 +46,16 @@
 #include <thirdparty/swappy-frame-pacing/swappyVk.h>
 #endif
 
+// For the offscreen swap chain's native handle export/cleanup (see _swap_chain_resize_offscreen()).
+#if defined(LINUXBSD_ENABLED)
+#include <drm_fourcc.h>
+#include <unistd.h>
+#elif defined(ANDROID_ENABLED)
+#include <android/hardware_buffer.h>
+#elif defined(WINDOWS_ENABLED)
+#include <windows.h>
+#endif
+
 #define ARRAY_SIZE(a) std_size(a)
 
 // Disable raytracing support on macOS and iOS due to MoltenVK limitations.
@@ -587,9 +597,26 @@ Error RenderingDeviceDriverVulkan::_initialize_device_extensions() {
 	_register_requested_device_extension(VK_NV_RAY_TRACING_VALIDATION_EXTENSION_NAME, false);
 	_register_requested_device_extension(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME, false);
 
-	// We don't actually use this extension, but some runtime components on some platforms
-	// can and will fill the validation layers with useless info otherwise if not enabled.
+	// VK_KHR_EXTERNAL_MEMORY_FD is also used (not just requested for validation layer
+	// noise, see below) by the "offscreen" display driver's swap chain, to export ring-buffer
+	// images as a platform-native handle for a host application to consume; see
+	// _swap_chain_resize_offscreen(). VK_KHR_dedicated_allocation (+ its Vulkan-1.0
+	// prerequisite VK_KHR_get_memory_requirements2) is used there too, for all three
+	// platforms — needed as an explicit device extension on Vulkan 1.0, where it isn't core.
+	_register_requested_device_extension(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME, false);
 	_register_requested_device_extension(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, false);
+	_register_requested_device_extension(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME, false);
+	_register_requested_device_extension(VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME, false);
+#if defined(LINUXBSD_ENABLED)
+	_register_requested_device_extension(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME, false);
+#endif
+#if defined(ANDROID_ENABLED)
+	_register_requested_device_extension(VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME, false);
+	_register_requested_device_extension(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME, false);
+#endif
+#if defined(WINDOWS_ENABLED)
+	_register_requested_device_extension(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME, false);
+#endif
 
 	if (Engine::get_singleton()->is_generate_spirv_debug_info_enabled()) {
 		_register_requested_device_extension(VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME, true);
@@ -1545,6 +1572,23 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 			device_functions.GetRayTracingShaderGroupHandlesKHR = PFN_vkGetRayTracingShaderGroupHandlesKHR(functions.GetDeviceProcAddr(vk_device, "vkGetRayTracingShaderGroupHandlesKHR"));
 			device_functions.CmdTraceRaysKHR = PFN_vkCmdTraceRaysKHR(functions.GetDeviceProcAddr(vk_device, "vkCmdTraceRaysKHR"));
 		}
+
+		// Offscreen swap chain external memory export.
+#if defined(LINUXBSD_ENABLED)
+		if (enabled_device_extension_names.has(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME)) {
+			device_functions.GetMemoryFdKHR = PFN_vkGetMemoryFdKHR(functions.GetDeviceProcAddr(vk_device, "vkGetMemoryFdKHR"));
+		}
+#endif
+#if defined(ANDROID_ENABLED)
+		if (enabled_device_extension_names.has(VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME)) {
+			device_functions.GetMemoryAndroidHardwareBufferANDROID = PFN_vkGetMemoryAndroidHardwareBufferANDROID(functions.GetDeviceProcAddr(vk_device, "vkGetMemoryAndroidHardwareBufferANDROID"));
+		}
+#endif
+#if defined(WINDOWS_ENABLED)
+		if (enabled_device_extension_names.has(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME)) {
+			device_functions.GetMemoryWin32HandleKHR = PFN_vkGetMemoryWin32HandleKHR(functions.GetDeviceProcAddr(vk_device, "vkGetMemoryWin32HandleKHR"));
+		}
+#endif
 	}
 
 	return OK;
@@ -3244,6 +3288,15 @@ Error RenderingDeviceDriverVulkan::command_queue_execute_and_present(CommandQueu
 
 		for (uint32_t i = 0; i < p_swap_chains.size(); i++) {
 			const SwapChain *swap_chain = (const SwapChain *)(p_swap_chains[i].id);
+			const RenderingContextDriverVulkan::Surface *surface = (const RenderingContextDriverVulkan::Surface *)(swap_chain->surface);
+			if (surface->offscreen) {
+				// Offscreen swap chains are never presented via vkQueuePresentKHR (see below),
+				// so they have no use for a present semaphore. Signaling one here that's never
+				// waited on would leave it permanently signaled, making the *next* frame's
+				// signal of the same semaphore invalid Vulkan usage.
+				continue;
+			}
+
 			VkSemaphore semaphore = swap_chain->present_semaphores[swap_chain->image_index];
 			present_semaphores.push_back(semaphore);
 			signal_semaphores.push_back(semaphore);
@@ -3290,14 +3343,30 @@ Error RenderingDeviceDriverVulkan::command_queue_execute_and_present(CommandQueu
 		thread_local LocalVector<VkSwapchainKHR> swapchains;
 		thread_local LocalVector<uint32_t> image_indices;
 		thread_local LocalVector<VkResult> results;
+		thread_local LocalVector<SwapChain *> presented_swap_chains;
 		swapchains.clear();
 		image_indices.clear();
+		presented_swap_chains.clear();
 
 		for (uint32_t i = 0; i < p_swap_chains.size(); i++) {
 			SwapChain *swap_chain = (SwapChain *)(p_swap_chains[i].id);
+			const RenderingContextDriverVulkan::Surface *surface = (const RenderingContextDriverVulkan::Surface *)(swap_chain->surface);
+			if (surface->offscreen) {
+				// No VkSwapchainKHR to present at all; hand the ready ring slot to the host
+				// directly instead (see the comment on RenderingContextDriverVulkan::Surface::offscreen).
+				_swap_chain_present_offscreen(swap_chain);
+				continue;
+			}
+
 			swapchains.push_back(swap_chain->vk_swapchain);
 			DEV_ASSERT(swap_chain->image_index < swap_chain->images.size());
 			image_indices.push_back(swap_chain->image_index);
+			presented_swap_chains.push_back(swap_chain);
+		}
+
+		if (swapchains.is_empty()) {
+			// Every swap chain in this batch was offscreen; nothing left to actually present.
+			return OK;
 		}
 
 		results.resize(swapchains.size());
@@ -3326,8 +3395,8 @@ Error RenderingDeviceDriverVulkan::command_queue_execute_and_present(CommandQueu
 
 		// Set the index to an invalid value. If any of the swap chains returned out of date, indicate it should be resized the next time it's acquired.
 		bool any_result_is_out_of_date = false;
-		for (uint32_t i = 0; i < p_swap_chains.size(); i++) {
-			SwapChain *swap_chain = (SwapChain *)(p_swap_chains[i].id);
+		for (uint32_t i = 0; i < presented_swap_chains.size(); i++) {
+			SwapChain *swap_chain = presented_swap_chains[i];
 			swap_chain->image_index = UINT_MAX;
 			if (results[i] == VK_ERROR_OUT_OF_DATE_KHR) {
 				context_driver->surface_set_needs_resize(swap_chain->surface, true);
@@ -3622,6 +3691,36 @@ void RenderingDeviceDriverVulkan::_swap_chain_release(SwapChain *swap_chain) {
 		vkDestroyImageView(vk_device, view, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_IMAGE_VIEW));
 	}
 
+	// Unlike a real swapchain's images (owned by vk_swapchain, destroyed implicitly below),
+	// an offscreen swap chain's images and their memory are ours to destroy.
+	const RenderingContextDriverVulkan::Surface *release_surface = (const RenderingContextDriverVulkan::Surface *)(swap_chain->surface);
+	if (release_surface != nullptr && release_surface->offscreen) {
+		for (VkImage image : swap_chain->images) {
+			vkDestroyImage(vk_device, image, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_IMAGE));
+		}
+		for (VkDeviceMemory memory : swap_chain->offscreen_memories) {
+			vkFreeMemory(vk_device, memory, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_DEVICE_MEMORY));
+		}
+		for (const RenderingContextDriverVulkan::OffscreenExportedSurface &exported : swap_chain->offscreen_exported) {
+#if defined(LINUXBSD_ENABLED)
+			if (exported.dmabuf_fd >= 0) {
+				close(exported.dmabuf_fd);
+			}
+#elif defined(ANDROID_ENABLED)
+			if (exported.hardware_buffer != nullptr) {
+				AHardwareBuffer_release((AHardwareBuffer *)exported.hardware_buffer);
+			}
+#elif defined(WINDOWS_ENABLED)
+			if (exported.shared_handle != nullptr) {
+				CloseHandle((HANDLE)exported.shared_handle);
+			}
+#endif
+		}
+	}
+	swap_chain->offscreen_memories.clear();
+	swap_chain->offscreen_exported.clear();
+	swap_chain->offscreen_current = 0;
+
 	swap_chain->image_index = UINT_MAX;
 	swap_chain->images.clear();
 	swap_chain->image_views.clear();
@@ -3659,6 +3758,319 @@ void RenderingDeviceDriverVulkan::_swap_chain_release(SwapChain *swap_chain) {
 	swap_chain->present_semaphores.clear();
 }
 
+// Renders into a small ring of manually-allocated VkImages exported as a platform-native
+// handle (dmabuf fd / AHardwareBuffer / D3D11 shared handle), instead of presenting to a real
+// VkSwapchainKHR. See the comment on RenderingContextDriverVulkan::Surface::offscreen for why,
+// and RenderingContextDriverVulkan::OffscreenExportedSurface for what's exported per platform.
+//
+// Reuses `SwapChain::images`/`image_views`/`framebuffers`/`render_pass` (populated below just
+// like the real swap chain path does, minus anything that only makes sense for a real
+// on-screen presentation target) so swap_chain_get_render_pass() etc. work unmodified.
+Error RenderingDeviceDriverVulkan::_swap_chain_resize_offscreen(RenderingContextDriverVulkan::Surface *p_surface, SwapChain *p_swap_chain) {
+	if (p_surface->width == 0 || p_surface->height == 0) {
+		// Very likely the host hasn't given us a size yet; don't create a ring, don't error either.
+		return ERR_SKIP;
+	}
+
+#if !defined(LINUXBSD_ENABLED) && !defined(ANDROID_ENABLED) && !defined(WINDOWS_ENABLED)
+	ERR_FAIL_V_MSG(ERR_UNAVAILABLE, "The offscreen display driver's Vulkan backend is not implemented for this platform.");
+#else
+	const VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
+	p_swap_chain->format = format;
+	p_swap_chain->color_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+	p_swap_chain->rdd_color_space = COLOR_SPACE_REC709_NONLINEAR_SRGB;
+
+#if defined(LINUXBSD_ENABLED)
+	if (device_functions.GetMemoryFdKHR == nullptr) {
+		ERR_FAIL_V_MSG(ERR_UNAVAILABLE, "The offscreen display driver requires VK_KHR_external_memory_fd and VK_EXT_external_memory_dma_buf, which this Vulkan device does not support.");
+	}
+	const VkExternalMemoryHandleTypeFlagBits handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+	// Linear tiling avoids depending on VK_EXT_image_drm_format_modifier to negotiate a
+	// tiled/compressed layout with the (unknown, host-chosen) dma-buf consumer; at the
+	// resolutions this is meant for (embedding a view, not a full game framebuffer) the
+	// bandwidth cost of linear tiling is an acceptable trade for that simplicity.
+	const VkImageTiling tiling = VK_IMAGE_TILING_LINEAR;
+#elif defined(ANDROID_ENABLED)
+	if (device_functions.GetMemoryAndroidHardwareBufferANDROID == nullptr) {
+		ERR_FAIL_V_MSG(ERR_UNAVAILABLE, "The offscreen display driver requires VK_ANDROID_external_memory_android_hardware_buffer, which this Vulkan device does not support.");
+	}
+	const VkExternalMemoryHandleTypeFlagBits handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
+	const VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL;
+#elif defined(WINDOWS_ENABLED)
+	if (device_functions.GetMemoryWin32HandleKHR == nullptr) {
+		ERR_FAIL_V_MSG(ERR_UNAVAILABLE, "The offscreen display driver requires VK_KHR_external_memory_win32, which this Vulkan device does not support.");
+	}
+	const VkExternalMemoryHandleTypeFlagBits handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+	const VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL;
+#endif
+
+	const uint32_t image_count = MAX(2U, p_surface->offscreen_buffer_count);
+	p_swap_chain->images.resize(image_count);
+	p_swap_chain->offscreen_memories.resize(image_count);
+	p_swap_chain->offscreen_exported.resize(image_count);
+
+	VkPhysicalDeviceMemoryProperties mem_properties;
+	vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_properties);
+
+	for (uint32_t i = 0; i < image_count; i++) {
+		VkExternalMemoryImageCreateInfo external_image_info = {};
+		external_image_info.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+		external_image_info.handleTypes = handle_type;
+
+		VkImageCreateInfo image_info = {};
+		image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+		image_info.pNext = &external_image_info;
+		image_info.imageType = VK_IMAGE_TYPE_2D;
+		image_info.format = format;
+		image_info.extent = { p_surface->width, p_surface->height, 1 };
+		image_info.mipLevels = 1;
+		image_info.arrayLayers = 1;
+		image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+		image_info.tiling = tiling;
+		image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+		image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+		VkImage image = VK_NULL_HANDLE;
+		VkResult err = vkCreateImage(vk_device, &image_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_IMAGE), &image);
+		ERR_FAIL_COND_V_MSG(err != VK_SUCCESS, ERR_CANT_CREATE, vformat("Couldn't create offscreen swap chain image (VkResult error %d).", err));
+
+		VkMemoryRequirements mem_requirements;
+		vkGetImageMemoryRequirements(vk_device, image, &mem_requirements);
+
+		uint32_t memory_type_index = UINT32_MAX;
+		for (uint32_t j = 0; j < mem_properties.memoryTypeCount; j++) {
+			bool type_matches = (mem_requirements.memoryTypeBits & (1u << j)) != 0;
+			bool is_device_local = (mem_properties.memoryTypes[j].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+			if (type_matches && is_device_local) {
+				memory_type_index = j;
+				break;
+			}
+		}
+		if (memory_type_index == UINT32_MAX) {
+			vkDestroyImage(vk_device, image, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_IMAGE));
+			ERR_FAIL_V_MSG(ERR_CANT_CREATE, "Couldn't find a device-local Vulkan memory type for offscreen swap chain image.");
+		}
+
+		VkExportMemoryAllocateInfo export_info = {};
+		export_info.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
+		export_info.handleTypes = handle_type;
+
+		// A dedicated allocation (one VkDeviceMemory per VkImage, as opposed to suballocating
+		// from a larger heap) is required by some drivers for external memory export to work
+		// at all, and is otherwise a reasonable default at the scale this is meant for.
+		VkMemoryDedicatedAllocateInfo dedicated_info = {};
+		dedicated_info.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+		dedicated_info.pNext = &export_info;
+		dedicated_info.image = image;
+
+		VkMemoryAllocateInfo alloc_info = {};
+		alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		alloc_info.pNext = &dedicated_info;
+		alloc_info.allocationSize = mem_requirements.size;
+		alloc_info.memoryTypeIndex = memory_type_index;
+
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		err = vkAllocateMemory(vk_device, &alloc_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_DEVICE_MEMORY), &memory);
+		if (err != VK_SUCCESS) {
+			vkDestroyImage(vk_device, image, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_IMAGE));
+			ERR_FAIL_V_MSG(ERR_CANT_CREATE, vformat("Couldn't allocate exportable Vulkan memory for offscreen swap chain image (VkResult error %d).", err));
+		}
+
+		err = vkBindImageMemory(vk_device, image, memory, 0);
+		if (err != VK_SUCCESS) {
+			vkFreeMemory(vk_device, memory, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_DEVICE_MEMORY));
+			vkDestroyImage(vk_device, image, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_IMAGE));
+			ERR_FAIL_V_MSG(ERR_CANT_CREATE, vformat("Couldn't bind Vulkan memory for offscreen swap chain image (VkResult error %d).", err));
+		}
+
+		RenderingContextDriverVulkan::OffscreenExportedSurface exported;
+#if defined(LINUXBSD_ENABLED)
+		VkMemoryGetFdInfoKHR fd_info = {};
+		fd_info.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
+		fd_info.memory = memory;
+		fd_info.handleType = handle_type;
+
+		int fd = -1;
+		err = device_functions.GetMemoryFdKHR(vk_device, &fd_info, &fd);
+		if (err != VK_SUCCESS) {
+			vkFreeMemory(vk_device, memory, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_DEVICE_MEMORY));
+			vkDestroyImage(vk_device, image, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_IMAGE));
+			ERR_FAIL_V_MSG(ERR_CANT_CREATE, vformat("Couldn't export offscreen swap chain image as a dma-buf (VkResult error %d).", err));
+		}
+
+		VkSubresourceLayout subresource_layout = {};
+		VkImageSubresource subresource = {};
+		subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		vkGetImageSubresourceLayout(vk_device, image, &subresource, &subresource_layout);
+
+		exported.dmabuf_fd = fd;
+		exported.drm_format = DRM_FORMAT_ABGR8888; // Matches VK_FORMAT_R8G8B8A8_UNORM's byte order.
+		exported.stride = (uint32_t)subresource_layout.rowPitch;
+		exported.offset = (uint32_t)subresource_layout.offset;
+		exported.modifier = 0; // DRM_FORMAT_MOD_LINEAR.
+#elif defined(ANDROID_ENABLED)
+		VkMemoryGetAndroidHardwareBufferInfoANDROID hwbuf_info = {};
+		hwbuf_info.sType = VK_STRUCTURE_TYPE_MEMORY_GET_ANDROID_HARDWARE_BUFFER_INFO_ANDROID;
+		hwbuf_info.memory = memory;
+
+		AHardwareBuffer *hardware_buffer = nullptr;
+		err = device_functions.GetMemoryAndroidHardwareBufferANDROID(vk_device, &hwbuf_info, &hardware_buffer);
+		if (err != VK_SUCCESS) {
+			vkFreeMemory(vk_device, memory, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_DEVICE_MEMORY));
+			vkDestroyImage(vk_device, image, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_IMAGE));
+			ERR_FAIL_V_MSG(ERR_CANT_CREATE, vformat("Couldn't export offscreen swap chain image as an AHardwareBuffer (VkResult error %d).", err));
+		}
+
+		exported.hardware_buffer = hardware_buffer;
+#elif defined(WINDOWS_ENABLED)
+		VkMemoryGetWin32HandleInfoKHR handle_info = {};
+		handle_info.sType = VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR;
+		handle_info.memory = memory;
+		handle_info.handleType = handle_type;
+
+		HANDLE shared_handle = nullptr;
+		err = device_functions.GetMemoryWin32HandleKHR(vk_device, &handle_info, &shared_handle);
+		if (err != VK_SUCCESS) {
+			vkFreeMemory(vk_device, memory, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_DEVICE_MEMORY));
+			vkDestroyImage(vk_device, image, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_IMAGE));
+			ERR_FAIL_V_MSG(ERR_CANT_CREATE, vformat("Couldn't export offscreen swap chain image as a Win32 handle (VkResult error %d).", err));
+		}
+
+		exported.shared_handle = shared_handle;
+		exported.fence_value = 0;
+#endif
+
+		p_swap_chain->images[i] = image;
+		p_swap_chain->offscreen_memories[i] = memory;
+		p_swap_chain->offscreen_exported[i] = exported;
+	}
+
+	// Image views, render pass, and framebuffers: shared with the on-screen swap chain path,
+	// except the attachment's final layout (GENERAL, since there's no WSI presentation to
+	// transition to PRESENT_SRC_KHR for) and that there is no `image_views`-only cleanup
+	// dance needed since we always fully rebuild everything above on resize.
+	VkImageViewCreateInfo view_create_info = {};
+	view_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	view_create_info.format = format;
+	view_create_info.components.r = VK_COMPONENT_SWIZZLE_R;
+	view_create_info.components.g = VK_COMPONENT_SWIZZLE_G;
+	view_create_info.components.b = VK_COMPONENT_SWIZZLE_B;
+	view_create_info.components.a = VK_COMPONENT_SWIZZLE_A;
+	view_create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	view_create_info.subresourceRange.levelCount = 1;
+	view_create_info.subresourceRange.layerCount = 1;
+
+	p_swap_chain->image_views.reserve(image_count);
+
+	VkImageView image_view;
+	for (uint32_t i = 0; i < image_count; i++) {
+		view_create_info.image = p_swap_chain->images[i];
+		VkResult err = vkCreateImageView(vk_device, &view_create_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_IMAGE_VIEW), &image_view);
+		ERR_FAIL_COND_V_MSG(err != VK_SUCCESS, ERR_CANT_CREATE, vformat("Couldn't create Vulkan image view for offscreen swap chain image (VkResult error %d).", err));
+
+		p_swap_chain->image_views.push_back(image_view);
+	}
+
+	VkAttachmentDescription2KHR attachment = {};
+	attachment.sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2_KHR;
+	attachment.format = format;
+	attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+	attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	attachment.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+	VkAttachmentReference2KHR color_reference = {};
+	color_reference.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2_KHR;
+	color_reference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+	VkSubpassDescription2KHR subpass = {};
+	subpass.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2_KHR;
+	subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	subpass.colorAttachmentCount = 1;
+	subpass.pColorAttachments = &color_reference;
+
+	VkRenderPassCreateInfo2KHR pass_info = {};
+	pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2_KHR;
+	pass_info.attachmentCount = 1;
+	pass_info.pAttachments = &attachment;
+	pass_info.subpassCount = 1;
+	pass_info.pSubpasses = &subpass;
+
+	VkRenderPass vk_render_pass = VK_NULL_HANDLE;
+	VkResult err = _create_render_pass(vk_device, &pass_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_RENDER_PASS), &vk_render_pass);
+	ERR_FAIL_COND_V_MSG(err != VK_SUCCESS, ERR_CANT_CREATE, vformat("Couldn't create Vulkan render pass for offscreen swap chain (VkResult error %d).", err));
+
+	RenderPassInfo *render_pass_info = VersatileResource::allocate<RenderPassInfo>(resources_allocator);
+	render_pass_info->vk_render_pass = vk_render_pass;
+
+	DEV_ASSERT(p_swap_chain->render_pass.id == 0);
+	p_swap_chain->render_pass = RenderPassID(render_pass_info);
+
+	VkFramebufferCreateInfo fb_create_info = {};
+	fb_create_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+	fb_create_info.renderPass = vk_render_pass;
+	fb_create_info.attachmentCount = 1;
+	fb_create_info.width = p_surface->width;
+	fb_create_info.height = p_surface->height;
+	fb_create_info.layers = 1;
+
+	p_swap_chain->framebuffers.reserve(image_count);
+
+	VkFramebuffer vk_framebuffer;
+	for (uint32_t i = 0; i < image_count; i++) {
+		fb_create_info.pAttachments = &p_swap_chain->image_views[i];
+		err = vkCreateFramebuffer(vk_device, &fb_create_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_FRAMEBUFFER), &vk_framebuffer);
+		ERR_FAIL_COND_V_MSG(err != VK_SUCCESS, ERR_CANT_CREATE, vformat("Couldn't create Vulkan framebuffer for offscreen swap chain image (VkResult error %d).", err));
+
+		Framebuffer *framebuffer = memnew(Framebuffer);
+		framebuffer->vk_framebuffer = vk_framebuffer;
+		// Not a `swap_chain_image` in the WSI sense (no vkAcquireNextImageKHR involved), but
+		// tagging it this way is what makes swap_chain_acquire_framebuffer()'s caller-visible
+		// contract (a framebuffer tied to a swap chain image) hold; nothing reads
+		// `swap_chain_acquired` for offscreen swap chains since we never call
+		// vkQueuePresentKHR on them.
+		framebuffer->swap_chain_image = p_swap_chain->images[i];
+		framebuffer->swap_chain_image_subresource_range = view_create_info.subresourceRange;
+		p_swap_chain->framebuffers.push_back(RDD::FramebufferID(framebuffer));
+	}
+
+	context_driver->surface_set_needs_resize(p_swap_chain->surface, false);
+
+	return OK;
+#endif // LINUXBSD_ENABLED || ANDROID_ENABLED || WINDOWS_ENABLED
+}
+
+RDD::FramebufferID RenderingDeviceDriverVulkan::_swap_chain_acquire_framebuffer_offscreen(SwapChain *p_swap_chain) {
+	uint32_t idx = p_swap_chain->offscreen_current;
+	p_swap_chain->image_index = idx;
+	return p_swap_chain->framebuffers[idx];
+}
+
+void RenderingDeviceDriverVulkan::_swap_chain_present_offscreen(SwapChain *p_swap_chain) {
+	if (p_swap_chain->image_index == UINT_MAX || p_swap_chain->image_index >= p_swap_chain->offscreen_exported.size()) {
+		return;
+	}
+
+	const RenderingContextDriverVulkan::Surface *surface = (const RenderingContextDriverVulkan::Surface *)(p_swap_chain->surface);
+	if (surface->offscreen_present_callback != nullptr) {
+		// No wait for GPU completion here: on Linux and Android, the kernel/platform's
+		// implicit fencing for dma-buf/AHardwareBuffer (honored by any well-behaved consumer
+		// importing the buffer) is what actually keeps a consumer's read ordered after this
+		// write, not the timing of this callback. See the comment on
+		// RenderingContextDriverVulkan::OffscreenPresentCallback.
+		const RenderingContextDriverVulkan::OffscreenExportedSurface &exported = p_swap_chain->offscreen_exported[p_swap_chain->image_index];
+		surface->offscreen_present_callback(surface->offscreen_present_userdata, &exported, surface->width, surface->height);
+	}
+
+	p_swap_chain->offscreen_current = (p_swap_chain->offscreen_current + 1) % p_swap_chain->offscreen_exported.size();
+	p_swap_chain->image_index = UINT_MAX;
+}
+
 RenderingDeviceDriver::SwapChainID RenderingDeviceDriverVulkan::swap_chain_create(RenderingContextDriver::SurfaceID p_surface) {
 	DEV_ASSERT(p_surface != 0);
 
@@ -3677,6 +4089,15 @@ Error RenderingDeviceDriverVulkan::swap_chain_resize(CommandQueueID p_cmd_queue,
 
 	// Release all current contents of the swap chain.
 	_swap_chain_release(swap_chain);
+
+	{
+		RenderingContextDriverVulkan::Surface *maybe_offscreen_surface = (RenderingContextDriverVulkan::Surface *)(swap_chain->surface);
+		if (maybe_offscreen_surface->offscreen) {
+			// No VkSurfaceKHR/VkSwapchainKHR at all in this mode; skip all of the WSI-specific
+			// logic below entirely. See the comment on RenderingContextDriverVulkan::Surface::offscreen.
+			return _swap_chain_resize_offscreen(maybe_offscreen_surface, swap_chain);
+		}
+	}
 
 	// Validate if the command queue being used supports creating the swap chain for this surface.
 	const RenderingContextDriverVulkan::Functions &functions = context_driver->functions_get();
@@ -3991,6 +4412,20 @@ RDD::FramebufferID RenderingDeviceDriverVulkan::swap_chain_acquire_framebuffer(C
 
 	CommandQueue *command_queue = (CommandQueue *)(p_cmd_queue.id);
 	SwapChain *swap_chain = (SwapChain *)(p_swap_chain.id);
+
+	{
+		const RenderingContextDriverVulkan::Surface *maybe_offscreen_surface = (const RenderingContextDriverVulkan::Surface *)(swap_chain->surface);
+		if (maybe_offscreen_surface->offscreen) {
+			// Offscreen swap chains never have a real vk_swapchain (see below), so the
+			// vk_swapchain == VK_NULL_HANDLE check further down does not apply to them.
+			if (swap_chain->images.is_empty() || context_driver->surface_get_needs_resize(swap_chain->surface)) {
+				r_resize_required = true;
+				return FramebufferID();
+			}
+			return _swap_chain_acquire_framebuffer_offscreen(swap_chain);
+		}
+	}
+
 	if ((swap_chain->vk_swapchain == VK_NULL_HANDLE) || context_driver->surface_get_needs_resize(swap_chain->surface)) {
 		// The surface does not have a valid swap chain or it indicates it requires a resize.
 		r_resize_required = true;

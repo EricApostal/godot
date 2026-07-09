@@ -140,7 +140,6 @@ void DisplayServerMacOSOffscreen::register_offscreen_driver() {
 // MARK: - Offscreen frame delivery
 
 void DisplayServerMacOSOffscreen::offscreen_set_frame_available_callback(const Callable &p_callback) {
-	print_line("[offscreen-debug] offscreen_set_frame_available_callback valid=" + String(p_callback.is_valid() ? "true" : "false"));
 	frame_available_callback = p_callback;
 }
 
@@ -148,7 +147,6 @@ void DisplayServerMacOSOffscreen::_offscreen_present_callback(void *p_userdata, 
 	// Called from a Metal command buffer completion handler; may run on an arbitrary
 	// Metal-owned thread, so only stash the frame here and hand off to the main thread in
 	// `process_events()`.
-	print_line("[offscreen-debug] _offscreen_present_callback fired");
 	DisplayServerMacOSOffscreen *ds = (DisplayServerMacOSOffscreen *)p_userdata;
 
 	MutexLock lock(ds->pending_frame_mutex);
@@ -175,16 +173,14 @@ void DisplayServerMacOSOffscreen::_deliver_pending_frame() {
 		}
 	}
 
-	if (deliver) {
-		print_line("[offscreen-debug] _deliver_pending_frame: deliver=true callback_valid=" + String(frame_available_callback.is_valid() ? "true" : "false"));
-	}
 	if (deliver && frame_available_callback.is_valid()) {
 		Dictionary frame_data;
+		// Matches GodotOffscreenSurfaceType::GODOT_OFFSCREEN_SURFACE_TYPE_IOSURFACE in libgodot.h.
+		frame_data["type"] = 0;
 		frame_data["iosurface_id"] = iosurface_id;
 		frame_data["width"] = frame_width;
 		frame_data["height"] = frame_height;
 		_window_callback(frame_available_callback, frame_data);
-		print_line("[offscreen-debug] _window_callback returned");
 	}
 }
 

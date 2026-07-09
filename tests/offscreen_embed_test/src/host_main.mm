@@ -175,18 +175,21 @@ static void frameCallback(void *p_userdata, const GodotOffscreenFrame *p_frame);
 // Called from the engine's rendering thread/completion handler; must hop to the main thread
 // before touching AppKit/CALayer.
 static void frameCallback(void *p_userdata, const GodotOffscreenFrame *p_frame) {
-	NSLog(@"[offscreen-debug] frameCallback reached, native_surface_id=%llu", (unsigned long long)p_frame->native_surface_id);
+	if (p_frame->type != GODOT_OFFSCREEN_SURFACE_TYPE_IOSURFACE) {
+		return;
+	}
+
 	OffscreenTestAppDelegate *self_ = (__bridge OffscreenTestAppDelegate *)p_userdata;
 
-	IOSurfaceRef surface = IOSurfaceLookup((uint32_t)p_frame->native_surface_id);
+	uint32_t native_surface_id = p_frame->surface.iosurface.iosurface_id;
+	IOSurfaceRef surface = IOSurfaceLookup(native_surface_id);
 	if (!surface) {
-		NSLog(@"[offscreen-debug] IOSurfaceLookup failed");
+		NSLog(@"IOSurfaceLookup(%u) failed", native_surface_id);
 		return;
 	}
 
 	uint32_t width = p_frame->width;
 	uint32_t height = p_frame->height;
-	uint64_t native_surface_id = p_frame->native_surface_id;
 
 	// IOSurfaceLookup() hands us a +1 reference; keep it alive until the block below (which
 	// may run on a later runloop turn) is done handing it to CALayer, then release it.

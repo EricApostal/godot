@@ -99,20 +99,84 @@ LIBGODOT_API GDExtensionBool libgodot_godot_instance_start(GDExtensionObjectPtr 
 LIBGODOT_API GDExtensionBool libgodot_godot_instance_iteration(GDExtensionObjectPtr p_godot_instance);
 
 /**
+ * @name GodotOffscreenSurfaceType
+ * @since 4.6
+ *
+ * Identifies which member of GodotOffscreenFrame::surface is populated. One display driver
+ * (and therefore one platform) only ever produces one of these.
+ */
+typedef enum {
+	GODOT_OFFSCREEN_SURFACE_TYPE_IOSURFACE = 0, // macOS, iOS.
+	GODOT_OFFSCREEN_SURFACE_TYPE_DMABUF = 1, // Linux (X11, Wayland).
+	GODOT_OFFSCREEN_SURFACE_TYPE_AHARDWAREBUFFER = 2, // Android.
+	GODOT_OFFSCREEN_SURFACE_TYPE_D3D11_SHARED_HANDLE = 3, // Windows.
+} GodotOffscreenSurfaceType;
+
+/**
  * @name GodotOffscreenFrame
  * @since 4.6
  *
  * Describes a single rendered frame delivered by \ref libgodot_godot_instance_set_offscreen_frame_callback,
- * for the "offscreen" display driver. `native_surface_id` is platform-specific; on macOS it
- * is an `IOSurfaceID` (see `IOSurfaceLookup`). The underlying native surface is owned by the
- * engine and reused across frames (double/triple buffered); the host must bracket any access
- * to it with the platform's equivalent of `IOSurfaceIncrementUseCount`/`IOSurfaceDecrementUseCount`
- * so the engine doesn't start rendering the next frame into a buffer the host is still reading.
+ * for the "offscreen" display driver. The underlying native surface/buffer is owned by the
+ * engine and reused across frames from a small fixed-size ring (double/triple buffered); the
+ * engine does not, in general, wait for the host to finish reading a buffer before reusing its
+ * ring slot — see the per-platform notes on `surface` below for what (if anything) each
+ * backend does to avoid the engine writing a buffer the host is still reading.
  */
 typedef struct {
-	uint64_t native_surface_id;
+	GodotOffscreenSurfaceType type;
 	uint32_t width;
 	uint32_t height;
+
+	union {
+		// GODOT_OFFSCREEN_SURFACE_TYPE_IOSURFACE.
+		//
+		// `iosurface_id` is an IOSurfaceID (see IOSurfaceLookup()). The engine does not wait
+		// for the host; bracket reads with IOSurfaceIncrementUseCount()/IOSurfaceDecrementUseCount()
+		// for a stronger guarantee against tearing.
+		struct {
+			uint32_t iosurface_id;
+		} iosurface;
+
+		// GODOT_OFFSCREEN_SURFACE_TYPE_DMABUF.
+		//
+		// `fd` is owned by the engine; the host must dup() it (e.g. implicitly, by importing
+		// it into EGL/Vulkan) if it needs to keep using it past this callback. Synchronization
+		// against the engine's GPU writes relies on the kernel's implicit dma-buf fencing
+		// (honored by any well-behaved DRM/Vulkan/EGL driver importing the buffer) rather than
+		// on the host waiting for anything from the engine explicitly.
+		struct {
+			int fd;
+			uint32_t drm_format; // DRM fourcc (see drm_fourcc.h), e.g. DRM_FORMAT_ARGB8888.
+			uint32_t stride;
+			uint32_t offset;
+			uint64_t modifier; // DRM format modifier; DRM_FORMAT_MOD_LINEAR (0) unless the driver requested a specific tiling/compression layout.
+		} dmabuf;
+
+		// GODOT_OFFSCREEN_SURFACE_TYPE_AHARDWAREBUFFER.
+		//
+		// `hardware_buffer` is an `AHardwareBuffer *`, owned by the engine. If the host needs
+		// to keep using it past this callback, it must call `AHardwareBuffer_acquire()` (and
+		// eventually `AHardwareBuffer_release()`). As with dmabuf, synchronization relies on
+		// the platform's implicit fencing for the buffer (the same mechanism `ANativeWindow`/
+		// `SurfaceTexture` consumers rely on), not on the host waiting for the engine.
+		struct {
+			void *hardware_buffer;
+		} ahardwarebuffer;
+
+		// GODOT_OFFSCREEN_SURFACE_TYPE_D3D11_SHARED_HANDLE.
+		//
+		// `shared_handle` is a Windows `HANDLE` (from `IDXGIResource1::CreateSharedHandle`)
+		// naming a D3D11 shared texture that aliases the engine's Vulkan-rendered image (via
+		// `VK_KHR_external_memory_win32`); open it with `ID3D11Device1::OpenSharedResource1`.
+		// Unlike the other backends, the host *must* synchronize explicitly: acquire the
+		// paired keyed mutex (`IDXGIKeyedMutex::AcquireSync` with the key given in `fence_value`)
+		// before reading, and release it when done, or it will race the engine's next write.
+		struct {
+			void *shared_handle;
+			uint64_t fence_value;
+		} d3d11;
+	} surface;
 } GodotOffscreenFrame;
 
 typedef void (*GodotOffscreenFrameCallback)(void *p_userdata, const GodotOffscreenFrame *p_frame);

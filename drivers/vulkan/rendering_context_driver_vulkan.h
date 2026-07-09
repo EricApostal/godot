@@ -128,6 +128,21 @@ protected:
 	virtual bool _use_validation_layers() const;
 	virtual Error _create_vulkan_instance(const VkInstanceCreateInfo *p_create_info, VkInstance *r_instance);
 
+	// Shared helper for platform-specific surface_create() overrides: builds an offscreen
+	// Surface with no VkSurfaceKHR at all (see Surface::offscreen), instead of the real
+	// WSI-backed one each platform normally creates. Each platform's WindowPlatformData is
+	// expected to add its own `offscreen`/`offscreen_buffer_count`/`offscreen_present_callback`/
+	// `offscreen_present_userdata` fields (matching Surface's) and branch to this in
+	// surface_create() when `offscreen` is set, before touching any WSI-specific fields.
+	SurfaceID _create_offscreen_surface(bool p_offscreen, uint32_t p_offscreen_buffer_count, OffscreenPresentCallback p_offscreen_present_callback, void *p_offscreen_present_userdata) {
+		Surface *surface = memnew(Surface);
+		surface->offscreen = p_offscreen;
+		surface->offscreen_buffer_count = p_offscreen_buffer_count;
+		surface->offscreen_present_callback = p_offscreen_present_callback;
+		surface->offscreen_present_userdata = p_offscreen_present_userdata;
+		return SurfaceID(surface);
+	}
+
 public:
 	virtual Error initialize() override;
 	virtual const Device &device_get(uint32_t p_device_index) const override;
@@ -157,6 +172,41 @@ public:
 	virtual bool is_colorspace_externally_managed() const { return false; }
 	bool is_colorspace_supported() const;
 
+	// Describes the platform-native handle produced by exporting an offscreen ring slot's
+	// VkImage memory. Only one of these shapes is ever compiled in for a given build, matching
+	// which platform's external memory extension RenderingDeviceDriverVulkan used to export it
+	// (see the offscreen swap chain path in drivers/vulkan/rendering_device_driver_vulkan.cpp).
+	struct OffscreenExportedSurface {
+#if defined(LINUXBSD_ENABLED)
+		// VK_EXT_external_memory_dma_buf. Valid only for the duration of the callback unless
+		// the host dup()s it (e.g. implicitly, by importing into EGL/Vulkan).
+		int dmabuf_fd = -1;
+		uint32_t drm_format = 0; // DRM fourcc, see drm_fourcc.h.
+		uint32_t stride = 0;
+		uint32_t offset = 0;
+		uint64_t modifier = 0;
+#elif defined(ANDROID_ENABLED)
+		// VK_ANDROID_external_memory_android_hardware_buffer. Owned by the engine; the host
+		// must AHardwareBuffer_acquire() it to keep using it past the callback.
+		void *hardware_buffer = nullptr; // AHardwareBuffer *
+#elif defined(WINDOWS_ENABLED)
+		// VK_KHR_external_memory_win32, opened on the host side as a D3D11 shared texture.
+		// Unlike the other platforms, the host must explicitly synchronize: acquire the paired
+		// keyed mutex with `fence_value` as the key before reading.
+		void *shared_handle = nullptr; // HANDLE
+		uint64_t fence_value = 0;
+#endif
+	};
+
+	// Invoked once a frame rendered into an offscreen surface's ring buffer is ready for the
+	// host application to consume. See RenderingDeviceDriverVulkan's offscreen swap chain path
+	// (drivers/vulkan/rendering_device_driver_vulkan.cpp) for what "ready" means on each
+	// platform — on Linux (dmabuf) and Android (AHardwareBuffer) this fires as soon as the GPU
+	// work is submitted, relying on the platform's implicit buffer fencing for safety rather
+	// than the engine waiting for completion; on Windows the host must explicitly acquire the
+	// keyed mutex described in OffscreenExportedSurface before reading.
+	typedef void (*OffscreenPresentCallback)(void *p_userdata, const OffscreenExportedSurface *p_surface, uint32_t p_width, uint32_t p_height);
+
 	// Vulkan-only methods.
 	struct Surface {
 		VkSurfaceKHR vk_surface = VK_NULL_HANDLE;
@@ -171,6 +221,16 @@ public:
 		float hdr_reference_luminance = 200.0f;
 		float hdr_max_luminance = 1000.0f;
 		float hdr_linear_luminance_scale = 100.0f;
+
+		// If true, this surface has no `vk_surface`/window at all; RenderingDeviceDriverVulkan
+		// renders into a small ring of manually-allocated, externally-exportable VkImages
+		// instead of a real VkSwapchainKHR. Used to embed Godot's rendering output into a host
+		// application (e.g. via libgodot) without Godot owning a window. See the offscreen
+		// swap chain path in drivers/vulkan/rendering_device_driver_vulkan.cpp.
+		bool offscreen = false;
+		uint32_t offscreen_buffer_count = 3;
+		OffscreenPresentCallback offscreen_present_callback = nullptr;
+		void *offscreen_present_userdata = nullptr;
 	};
 
 	VkInstance instance_get() const;

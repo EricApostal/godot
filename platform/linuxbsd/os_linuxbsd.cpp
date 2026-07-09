@@ -54,6 +54,10 @@
 #include "wayland/display_server_wayland.h"
 #endif
 
+#ifdef VULKAN_ENABLED
+#include "display_server_linuxbsd_offscreen.h"
+#endif
+
 #include "modules/modules_enabled.gen.h" // For regex.
 #ifdef MODULE_REGEX_ENABLED
 #include "modules/regex/regex.h"
@@ -1310,6 +1314,10 @@ OS_LinuxBSD::OS_LinuxBSD() {
 
 #ifdef WAYLAND_ENABLED
 	DisplayServerWayland::register_wayland_driver();
+#endif
+
+#ifdef VULKAN_ENABLED
+	DisplayServerLinuxBSDOffscreen::register_offscreen_driver();
 #endif
 
 #ifdef FONTCONFIG_ENABLED

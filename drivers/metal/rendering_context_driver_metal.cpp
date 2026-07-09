@@ -37,7 +37,7 @@
 #include "drivers/metal/rendering_device_driver_metal3.h"
 
 #include <CoreFoundation/CoreFoundation.h>
-#include <IOSurface/IOSurface.h>
+#include <IOSurface/IOSurfaceRef.h>
 #include <objc/message.h>
 #include <os/log.h>
 #include <os/signpost.h>
@@ -479,7 +479,6 @@ public:
 	}
 
 	Error resize(uint32_t p_desired_framebuffer_count, RDD::DataFormat &r_format, RDD::ColorSpace &r_color_space) override final {
-		print_line(vformat("[offscreen-debug] SurfaceIOSurface::resize %dx%d buffers=%d", width, height, buffers.size()));
 		if (width == 0 || height == 0) {
 			return ERR_SKIP;
 		}
@@ -529,12 +528,10 @@ public:
 		frame_buffer.size = Size2i(width, height);
 		frame_buffer.set_texture(0, buffer.texture);
 
-		print_line(vformat("[offscreen-debug] acquire_next_frame_buffer: idx=%d ok", current));
 		return RDD::FramebufferID(&frame_buffer);
 	}
 
 	void present(MTL3::MDCommandBuffer *p_cmd_buffer) override final {
-		print_line(vformat("[offscreen-debug] present: idx=%d", current));
 		uint32_t idx = current;
 		current = (current + 1) % buffers.size();
 
@@ -552,7 +549,6 @@ public:
 		}
 
 		p_cmd_buffer->get_command_buffer()->addCompletedHandler([frame_buffer, surface, frame_width, frame_height, callback, userdata](MTL::CommandBuffer *) {
-			print_line("[offscreen-debug] present completed handler, callback_set=" + String(callback != nullptr ? "true" : "false"));
 			frame_buffer->unset_texture(0);
 			if (surface) {
 				if (callback) {

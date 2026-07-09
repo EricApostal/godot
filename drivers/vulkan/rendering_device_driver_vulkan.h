@@ -135,6 +135,17 @@ class RenderingDeviceDriverVulkan : public RenderingDeviceDriver {
 		PFN_vkCreateRayTracingPipelinesKHR CreateRaytracingPipelinesKHR = nullptr;
 		PFN_vkGetRayTracingShaderGroupHandlesKHR GetRayTracingShaderGroupHandlesKHR = nullptr;
 		PFN_vkCmdTraceRaysKHR CmdTraceRaysKHR = nullptr;
+
+		// Offscreen swap chain external memory export (see _swap_chain_resize_offscreen()).
+#if defined(LINUXBSD_ENABLED)
+		PFN_vkGetMemoryFdKHR GetMemoryFdKHR = nullptr;
+#endif
+#if defined(ANDROID_ENABLED)
+		PFN_vkGetMemoryAndroidHardwareBufferANDROID GetMemoryAndroidHardwareBufferANDROID = nullptr;
+#endif
+#if defined(WINDOWS_ENABLED)
+		PFN_vkGetMemoryWin32HandleKHR GetMemoryWin32HandleKHR = nullptr;
+#endif
 	};
 	// Debug marker extensions.
 	VkDebugReportObjectTypeEXT _convert_to_debug_report_objectType(VkObjectType p_object_type);
@@ -440,10 +451,24 @@ private:
 #ifdef ANDROID_ENABLED
 		uint64_t refresh_duration = 0;
 #endif
+
+		// Offscreen swap chain state (see _swap_chain_resize_offscreen()); `images` above are
+		// owned by us in this mode (allocated with vkCreateImage rather than
+		// vkGetSwapchainImagesKHR) and need explicit cleanup, tracked here alongside the
+		// VkDeviceMemory each was bound to. `offscreen_exported[i]` is exported once (at
+		// creation) rather than per frame, since each platform's "export as native handle"
+		// call transfers a new reference/fd/handle to the caller every time it's called —
+		// exporting once per ring slot and reusing the result avoids leaking one per frame.
+		TightLocalVector<VkDeviceMemory> offscreen_memories;
+		TightLocalVector<RenderingContextDriverVulkan::OffscreenExportedSurface> offscreen_exported;
+		uint32_t offscreen_current = 0;
 	};
 
 	bool _determine_swap_chain_format(RenderingContextDriver::SurfaceID p_surface, VkFormat &r_format, VkColorSpaceKHR &r_color_space, RDD::ColorSpace &r_rdd_color_space);
 	void _swap_chain_release(SwapChain *p_swap_chain);
+	Error _swap_chain_resize_offscreen(RenderingContextDriverVulkan::Surface *p_surface, SwapChain *p_swap_chain);
+	RDD::FramebufferID _swap_chain_acquire_framebuffer_offscreen(SwapChain *p_swap_chain);
+	void _swap_chain_present_offscreen(SwapChain *p_swap_chain);
 
 public:
 	virtual SwapChainID swap_chain_create(RenderingContextDriver::SurfaceID p_surface) override final;

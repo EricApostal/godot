@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  os_ios.mm                                                             */
+/*  rendering_context_driver_vulkan_offscreen.cpp                         */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,27 +28,21 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#import "os_ios.h"
+#ifdef VULKAN_ENABLED
 
-#import "display_server_ios.h"
-#import "display_server_ios_offscreen.h"
+#include "rendering_context_driver_vulkan_offscreen.h"
 
-#ifdef IOS_ENABLED
-
-OS_IOS *OS_IOS::get_singleton() {
-	return (OS_IOS *)OS_AppleEmbedded::get_singleton();
+RenderingContextDriver::SurfaceID RenderingContextDriverVulkanOffscreen::surface_create(const void *p_platform_data) {
+	const WindowPlatformData *wpd = (const WindowPlatformData *)(p_platform_data);
+	return _create_offscreen_surface(true, wpd->offscreen_buffer_count, wpd->offscreen_present_callback, wpd->offscreen_present_userdata);
 }
 
-OS_IOS::OS_IOS() :
-		OS_AppleEmbedded() {
-	DisplayServerIOS::register_ios_driver();
-	DisplayServerIOSOffscreen::register_offscreen_driver();
+RenderingContextDriverVulkanOffscreen::RenderingContextDriverVulkanOffscreen() {
+	// Does nothing.
 }
 
-OS_IOS::~OS_IOS() {}
-
-String OS_IOS::get_name() const {
-	return "iOS";
+RenderingContextDriverVulkanOffscreen::~RenderingContextDriverVulkanOffscreen() {
+	// Does nothing.
 }
 
-#endif // IOS_ENABLED
+#endif // VULKAN_ENABLED

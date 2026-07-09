@@ -32,6 +32,7 @@
 
 #include "core/extension/godot_instance.h"
 #include "core/extension/libgodot.h"
+#include "core/extension/libgodot_helpers.h"
 #include "main/main.h"
 
 static OS_LinuxBSD *os = nullptr;
