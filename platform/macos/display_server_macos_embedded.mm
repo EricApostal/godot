@@ -169,6 +169,7 @@ DisplayServerMacOSEmbedded::DisplayServerMacOSEmbedded(const String &p_rendering
 #endif
 #ifdef METAL_ENABLED
 		if (rendering_driver == "metal") {
+			wpd.metal = {};
 			wpd.metal.layer = (__bridge CA::MetalLayer *)layer;
 		}
 #endif

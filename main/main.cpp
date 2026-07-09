@@ -299,6 +299,7 @@ bool profile_gpu = false;
 
 static const String NULL_DISPLAY_DRIVER("headless");
 static const String EMBEDDED_DISPLAY_DRIVER("embedded");
+static const String OFFSCREEN_DISPLAY_DRIVER("offscreen");
 static const String NULL_AUDIO_DRIVER("Dummy");
 
 // The length of the longest column in the command-line help we should align to
@@ -1507,6 +1508,13 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 			display_driver = EMBEDDED_DISPLAY_DRIVER;
 #else
 			OS::get_singleton()->print("--embedded is only supported on macOS, aborting.\n");
+			goto error;
+#endif
+		} else if (arg == "--offscreen") { // Enable offscreen rendering mode, for embedding via libgodot.
+#ifdef MACOS_ENABLED
+			display_driver = OFFSCREEN_DISPLAY_DRIVER;
+#else
+			OS::get_singleton()->print("--offscreen is only supported on macOS, aborting.\n");
 			goto error;
 #endif
 		} else if (arg == "--log-file") { // write to log file
@@ -3317,7 +3325,7 @@ Error Main::setup2(bool p_show_boot_logo) {
 				accessibility_driver_name = "accesskit";
 			}
 		}
-		if (display_driver == NULL_DISPLAY_DRIVER || display_driver == EMBEDDED_DISPLAY_DRIVER || accessibility_mode == AccessibilityServerEnums::AccessibilityMode::ACCESSIBILITY_DISABLED) {
+		if (display_driver == NULL_DISPLAY_DRIVER || display_driver == EMBEDDED_DISPLAY_DRIVER || display_driver == OFFSCREEN_DISPLAY_DRIVER || accessibility_mode == AccessibilityServerEnums::AccessibilityMode::ACCESSIBILITY_DISABLED) {
 			accessibility_driver_name = "dummy";
 		}
 		int accessibility_driver_idx = -1;

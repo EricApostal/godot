@@ -1709,6 +1709,14 @@
 				Sets the current mouse mode. See also [method mouse_get_mode].
 			</description>
 		</method>
+		<method name="offscreen_set_frame_available_callback">
+			<return type="void" />
+			<param index="0" name="callback" type="Callable" />
+			<description>
+				Registers a callback invoked whenever a new rendered frame is available, for display servers that render offscreen instead of owning a window (see the [code]offscreen[/code] display driver, used to embed Godot into a host application via libgodot). The callback is called as [code]callback(frame_data: Dictionary)[/code], with a platform-specific payload describing the native GPU surface backing the frame, e.g. on macOS: [code]{"iosurface_id": int, "width": int, "height": int}[/code].
+				[b]Note:[/b] This method is implemented on macOS, and only for the [code]offscreen[/code] display driver.
+			</description>
+		</method>
 		<method name="pip_mode_enter">
 			<return type="void" />
 			<param index="0" name="window_id" type="int" default="0" />

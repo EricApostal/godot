@@ -58,6 +58,7 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
 
 	int wait_for_debugger = 0; // wait 5 second by default
 	bool is_embedded = false;
+	bool is_offscreen = false;
 	bool is_headless = false;
 
 	for (int i = 0; i < argc; i++) {
@@ -77,6 +78,10 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
 
 		if (strcmp("--embedded", argv[i]) == 0) {
 			is_embedded = true;
+		}
+
+		if (strcmp("--offscreen", argv[i]) == 0) {
+			is_offscreen = true;
 		}
 		for (size_t j = 0; j < std::size(OS_MacOS::headless_args); j++) {
 			if (strcmp(OS_MacOS::headless_args[j], argv[i]) == 0) {
@@ -105,6 +110,8 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
 #endif
 	} else if (is_headless) {
 		os = memnew(OS_MacOS_Headless(args[0], remaining_args, remaining_args > 0 ? &args[1] : nullptr));
+	} else if (is_offscreen) {
+		os = memnew(OS_MacOS_Offscreen(args[0], remaining_args, remaining_args > 0 ? &args[1] : nullptr));
 	} else {
 		os = memnew(OS_MacOS_NSApp(args[0], remaining_args, remaining_args > 0 ? &args[1] : nullptr));
 	}
@@ -120,8 +127,8 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
 	}
 #endif
 
-	if (is_embedded) {
-		// No dock icon for the embedded process, as it is hosted in the Godot editor.
+	if (is_embedded || is_offscreen) {
+		// No dock icon for the embedded/offscreen process, as it has no window of its own.
 		ProcessSerialNumber psn = { 0, kCurrentProcess };
 		(void)TransformProcessType(&psn, kProcessTransformToBackgroundApplication);
 	}

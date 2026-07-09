@@ -1289,6 +1289,10 @@ int64_t DisplayServer::window_get_native_handle(DisplayServerEnums::HandleType p
 	return 0;
 }
 
+void DisplayServer::offscreen_set_frame_available_callback(const Callable &p_callback) {
+	WARN_PRINT("Offscreen rendering is not supported by this display server.");
+}
+
 void DisplayServer::window_set_vsync_mode(DisplayServerEnums::VSyncMode p_vsync_mode, DisplayServerEnums::WindowID p_window) {
 	WARN_PRINT("Changing the V-Sync mode is not supported by this display server.");
 }
@@ -1491,6 +1495,9 @@ void DisplayServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_window_at_screen_position", "position"), &DisplayServer::get_window_at_screen_position);
 
 	ClassDB::bind_method(D_METHOD("window_get_native_handle", "handle_type", "window_id"), &DisplayServer::window_get_native_handle, DEFVAL(DisplayServerEnums::MAIN_WINDOW_ID));
+
+	ClassDB::bind_method(D_METHOD("offscreen_set_frame_available_callback", "callback"), &DisplayServer::offscreen_set_frame_available_callback);
+
 	ClassDB::bind_method(D_METHOD("window_get_active_popup"), &DisplayServer::window_get_active_popup);
 	ClassDB::bind_method(D_METHOD("window_set_popup_safe_rect", "window", "rect"), &DisplayServer::window_set_popup_safe_rect);
 	ClassDB::bind_method(D_METHOD("window_get_popup_safe_rect", "window"), &DisplayServer::window_get_popup_safe_rect);

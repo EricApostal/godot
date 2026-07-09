@@ -209,6 +209,17 @@ public:
 	OS_MacOS_Headless(const char *p_execpath, int p_argc, char **p_argv);
 };
 
+// Renders offscreen into a native GPU surface instead of owning a window or an
+// `NSApplication` UI, so it can be embedded into an already-running host application via
+// libgodot. Unlike `OS_MacOS_NSApp`, this does not touch the shared `NSApplication` (menu
+// bar, activation policy, delegate), since the host app owns that already.
+class OS_MacOS_Offscreen : public OS_MacOS {
+public:
+	virtual void run() override;
+
+	OS_MacOS_Offscreen(const char *p_execpath, int p_argc, char **p_argv);
+};
+
 #ifdef TOOLS_ENABLED
 
 class OS_MacOS_Embedded : public OS_MacOS {

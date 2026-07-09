@@ -36,6 +36,8 @@
 #include "drivers/metal/metal_objects_shared.h"
 #include "drivers/metal/rendering_device_driver_metal3.h"
 
+#include <CoreFoundation/CoreFoundation.h>
+#include <IOSurface/IOSurface.h>
 #include <objc/message.h>
 #include <os/log.h>
 #include <os/signpost.h>
@@ -393,10 +395,193 @@ public:
 	}
 };
 
+// A surface that renders into a small ring of IOSurface-backed textures instead of
+// presenting to an on-screen CAMetalLayer. Used to embed Godot's rendering output into a
+// host application (e.g. via libgodot) with zero-copy GPU surface sharing, instead of Godot
+// owning an actual window.
+//
+// Unlike `SurfaceLayer`/`SurfaceOffscreen`, there is no `MTL::Drawable` involved: the host
+// consumes frames through `WindowPlatformData::offscreen_present_callback` instead of the
+// surface being presented by the window system.
+class API_AVAILABLE(macos(11.0), ios(14.0), tvos(14.0)) SurfaceIOSurface : public RenderingContextDriverMetal::Surface {
+	struct Buffer {
+		IOSurfaceRef surface = nullptr;
+		MTL::Texture *texture = nullptr;
+	};
+
+	LocalVector<Buffer> buffers;
+	LocalVector<MDFrameBuffer> frame_buffers;
+	uint32_t current = 0;
+
+	RenderingContextDriverMetal::OffscreenPresentCallback present_callback = nullptr;
+	void *present_userdata = nullptr;
+
+	static IOSurfaceRef _create_iosurface(uint32_t p_width, uint32_t p_height) {
+		int width = (int)p_width;
+		int height = (int)p_height;
+		int bytes_per_element = 4;
+		int bytes_per_row = width * bytes_per_element;
+		int32_t pixel_format = 'BGRA';
+
+		CFMutableDictionaryRef props = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+
+		CFNumberRef cf_width = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &width);
+		CFNumberRef cf_height = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &height);
+		CFNumberRef cf_bpe = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &bytes_per_element);
+		CFNumberRef cf_bpr = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &bytes_per_row);
+		CFNumberRef cf_pixel_format = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &pixel_format);
+
+		CFDictionarySetValue(props, kIOSurfaceWidth, cf_width);
+		CFDictionarySetValue(props, kIOSurfaceHeight, cf_height);
+		CFDictionarySetValue(props, kIOSurfaceBytesPerElement, cf_bpe);
+		CFDictionarySetValue(props, kIOSurfaceBytesPerRow, cf_bpr);
+		CFDictionarySetValue(props, kIOSurfacePixelFormat, cf_pixel_format);
+
+		IOSurfaceRef surface = IOSurfaceCreate(props);
+
+		CFRelease(cf_width);
+		CFRelease(cf_height);
+		CFRelease(cf_bpe);
+		CFRelease(cf_bpr);
+		CFRelease(cf_pixel_format);
+		CFRelease(props);
+
+		return surface;
+	}
+
+	void _release_buffers() {
+		for (Buffer &buffer : buffers) {
+			if (buffer.texture) {
+				buffer.texture->release();
+				buffer.texture = nullptr;
+			}
+			if (buffer.surface) {
+				CFRelease(buffer.surface);
+				buffer.surface = nullptr;
+			}
+		}
+	}
+
+public:
+	SurfaceIOSurface(MTL::Device *p_device, uint32_t p_buffer_count, RenderingContextDriverMetal::OffscreenPresentCallback p_callback, void *p_userdata) :
+			Surface(p_device), present_callback(p_callback), present_userdata(p_userdata) {
+		pixel_format = MTL::PixelFormatBGRA8Unorm;
+
+		buffers.resize(MAX(2U, p_buffer_count));
+		frame_buffers.resize(buffers.size());
+		for (uint32_t i = 0; i < frame_buffers.size(); i++) {
+			frame_buffers[i].set_texture_count(1);
+		}
+	}
+
+	~SurfaceIOSurface() override {
+		_release_buffers();
+	}
+
+	Error resize(uint32_t p_desired_framebuffer_count, RDD::DataFormat &r_format, RDD::ColorSpace &r_color_space) override final {
+		print_line(vformat("[offscreen-debug] SurfaceIOSurface::resize %dx%d buffers=%d", width, height, buffers.size()));
+		if (width == 0 || height == 0) {
+			return ERR_SKIP;
+		}
+
+		// HDR and non-BGRA8 output are not supported for offscreen IOSurface targets yet;
+		// this is the format most host compositors (Metal/CoreAnimation/CoreVideo) expect
+		// for zero-copy display, so it covers the common embedding case.
+		r_color_space = RDD::COLOR_SPACE_REC709_NONLINEAR_SRGB;
+		r_format = RDD::DATA_FORMAT_B8G8R8A8_UNORM;
+
+		_release_buffers();
+		current = 0;
+
+		for (uint32_t i = 0; i < buffers.size(); i++) {
+			IOSurfaceRef surface = _create_iosurface(width, height);
+			ERR_FAIL_NULL_V_MSG(surface, ERR_CANT_CREATE, "Could not create IOSurface for offscreen display.");
+
+			MTL::TextureDescriptor *texture_descriptor = MTL::TextureDescriptor::texture2DDescriptor(pixel_format, width, height, false);
+			texture_descriptor->setUsage(MTL::TextureUsageRenderTarget);
+			texture_descriptor->setStorageMode(MTL::StorageModeShared);
+			MTL::Texture *texture = device->newTexture(texture_descriptor, surface, 0);
+			if (texture == nullptr) {
+				CFRelease(surface);
+				ERR_FAIL_V_MSG(ERR_CANT_CREATE, "Could not create Metal texture backed by IOSurface.");
+			}
+
+			buffers[i].surface = surface;
+			buffers[i].texture = texture;
+		}
+
+		return OK;
+	}
+
+	RDD::FramebufferID acquire_next_frame_buffer() override final {
+		const Buffer &buffer = buffers[current];
+		if (buffer.surface == nullptr) {
+			return RDD::FramebufferID();
+		}
+
+		// Note: IOSurfaceIsInUse() is not a usable throttle here — Metal appears to manage an
+		// IOSurface-backed texture's use count itself while it's referenced by GPU work, so it
+		// doesn't reflect host consumption. Rely on the fixed ring size (like SurfaceLayer/
+		// SurfaceOffscreen above rely on their own drawable/texture pools) instead; a host that
+		// wants stronger guarantees should still bracket its own reads with
+		// IOSurfaceIncrementUseCount()/IOSurfaceDecrementUseCount() to avoid tearing.
+		MDFrameBuffer &frame_buffer = frame_buffers[current];
+		frame_buffer.size = Size2i(width, height);
+		frame_buffer.set_texture(0, buffer.texture);
+
+		print_line(vformat("[offscreen-debug] acquire_next_frame_buffer: idx=%d ok", current));
+		return RDD::FramebufferID(&frame_buffer);
+	}
+
+	void present(MTL3::MDCommandBuffer *p_cmd_buffer) override final {
+		print_line(vformat("[offscreen-debug] present: idx=%d", current));
+		uint32_t idx = current;
+		current = (current + 1) % buffers.size();
+
+		IOSurfaceRef surface = buffers[idx].surface;
+		uint32_t frame_width = width;
+		uint32_t frame_height = height;
+		RenderingContextDriverMetal::OffscreenPresentCallback callback = present_callback;
+		void *userdata = present_userdata;
+		MDFrameBuffer *frame_buffer = &frame_buffers[idx];
+
+		// The completion handler runs asynchronously and may fire after a concurrent resize()
+		// has released `surface`, so keep our own reference alive until the handler runs.
+		if (surface) {
+			CFRetain(surface);
+		}
+
+		p_cmd_buffer->get_command_buffer()->addCompletedHandler([frame_buffer, surface, frame_width, frame_height, callback, userdata](MTL::CommandBuffer *) {
+			print_line("[offscreen-debug] present completed handler, callback_set=" + String(callback != nullptr ? "true" : "false"));
+			frame_buffer->unset_texture(0);
+			if (surface) {
+				if (callback) {
+					callback(userdata, surface, frame_width, frame_height);
+				}
+				CFRelease(surface);
+			}
+		});
+	}
+
+	MTL::Drawable *next_drawable() override final {
+		// No CAMetalLayer/drawable is involved for offscreen IOSurface output; frames are
+		// delivered to the host via the present callback instead.
+		return nullptr;
+	}
+
+	API_AVAILABLE(macos(26.0), ios(26.0))
+	MTL::ResidencySet *get_residency_set() const override final {
+		// Explicit resource barriers are not supported for offscreen surfaces yet.
+		return nullptr;
+	}
+};
+
 RenderingContextDriver::SurfaceID RenderingContextDriverMetal::surface_create(const void *p_platform_data) {
 	const WindowPlatformData *wpd = (const WindowPlatformData *)(p_platform_data);
 	Surface *surface;
-	if (String v = OS::get_singleton()->get_environment("GODOT_MTL_OFF_SCREEN"); v == U"1") {
+	if (wpd->offscreen) {
+		surface = memnew(SurfaceIOSurface(metal_device, wpd->offscreen_buffer_count, wpd->offscreen_present_callback, wpd->offscreen_present_userdata));
+	} else if (String v = OS::get_singleton()->get_environment("GODOT_MTL_OFF_SCREEN"); v == U"1") {
 		surface = memnew(SurfaceOffscreen(wpd->layer, metal_device));
 	} else {
 		surface = memnew(SurfaceLayer(wpd->layer, metal_device));

@@ -78,9 +78,29 @@ public:
 
 #pragma mark - Metal-specific methods
 
+	// Invoked (from an internal Metal command buffer completion handler, on a Metal-owned
+	// thread) once a frame rendered into an offscreen surface is ready for the host
+	// application to consume. `p_surface` is owned by the surface and is reused for future
+	// frames; the host must bracket any access to it with `IOSurfaceIncrementUseCount`/
+	// `IOSurfaceDecrementUseCount` so the surface isn't rewritten by Godot while still in use.
+	typedef void (*OffscreenPresentCallback)(void *p_userdata, IOSurfaceRef p_surface, uint32_t p_width, uint32_t p_height);
+
 	// Platform-specific data for the Windows embedded in this driver.
+	//
+	// Kept as a trivial aggregate (no default member initializers) since callers sometimes
+	// place this inside a C-style union alongside RenderingContextDriverVulkanMacOS's
+	// platform data; always zero-initialize (`= {}`) before setting individual fields.
 	struct WindowPlatformData {
 		CA::MetalLayer *layer;
+
+		// If true, `layer` is ignored and an offscreen surface is created instead. The
+		// offscreen surface renders into a small ring of caller-visible IOSurfaces rather
+		// than presenting to an on-screen layer, which is used to embed Godot's rendering
+		// output into a host application (e.g. via libgodot) without Godot owning a window.
+		bool offscreen;
+		uint32_t offscreen_buffer_count;
+		OffscreenPresentCallback offscreen_present_callback;
+		void *offscreen_present_userdata;
 	};
 
 	class API_AVAILABLE(macos(11.0), ios(14.0), tvos(14.0)) Surface {

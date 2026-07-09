@@ -383,6 +383,17 @@ public:
 
 	virtual int64_t window_get_native_handle(DisplayServerEnums::HandleType p_handle_type, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const;
 
+	// MARK: - Offscreen rendering (embedding via libgodot)
+
+	// Registers a callback invoked whenever a new rendered frame is available, for display
+	// servers that render offscreen instead of owning a window (see the "offscreen" display
+	// driver). The callback is called as `callback(frame_data: Dictionary)`, with a
+	// platform-specific payload describing the native GPU surface backing the frame, e.g. on
+	// macOS: `{"iosurface_id": int, "width": int, "height": int}`.
+	//
+	// No-op (with a warning) on display servers that don't support offscreen rendering.
+	virtual void offscreen_set_frame_available_callback(const Callable &p_callback);
+
 	virtual DisplayServerEnums::WindowID get_window_at_screen_position(const Point2i &p_position) const = 0;
 
 	virtual void window_attach_instance_id(ObjectID p_instance, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) = 0; // Note: internal method used by Window, do not expose.
