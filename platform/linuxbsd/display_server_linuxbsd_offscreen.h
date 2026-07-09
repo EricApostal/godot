@@ -37,6 +37,7 @@
 
 #include "drivers/vulkan/rendering_context_driver_vulkan.h"
 
+class InputEvent;
 class NativeMenu;
 class RenderingDevice;
 

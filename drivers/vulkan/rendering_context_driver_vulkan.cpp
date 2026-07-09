@@ -1046,7 +1046,10 @@ bool RenderingContextDriverVulkan::surface_get_needs_resize(SurfaceID p_surface)
 
 void RenderingContextDriverVulkan::surface_destroy(SurfaceID p_surface) {
 	Surface *surface = (Surface *)(p_surface);
-	vkDestroySurfaceKHR(instance, surface->vk_surface, get_allocation_callbacks(VK_OBJECT_TYPE_SURFACE_KHR));
+	// Offscreen surfaces have no VkSurfaceKHR at all (see Surface::offscreen); nothing to destroy.
+	if (!surface->offscreen) {
+		vkDestroySurfaceKHR(instance, surface->vk_surface, get_allocation_callbacks(VK_OBJECT_TYPE_SURFACE_KHR));
+	}
 	memdelete(surface);
 }
 
@@ -1082,6 +1085,12 @@ bool RenderingContextDriverVulkan::queue_family_supports_present(VkPhysicalDevic
 	DEV_ASSERT(p_physical_device != VK_NULL_HANDLE);
 	DEV_ASSERT(p_surface != 0);
 	Surface *surface = (Surface *)(p_surface);
+	// Offscreen surfaces have no VkSurfaceKHR at all (see Surface::offscreen); there's no WSI
+	// presentation to query support for, and any graphics-capable queue family can write into
+	// the offscreen swap chain's manually-allocated images.
+	if (surface->offscreen) {
+		return true;
+	}
 	VkBool32 present_supported = false;
 	VkResult err = vkGetPhysicalDeviceSurfaceSupportKHR(p_physical_device, p_queue_family_index, surface->vk_surface, &present_supported);
 	return err == VK_SUCCESS && present_supported;
