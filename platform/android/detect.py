@@ -72,8 +72,11 @@ def get_ndk_version():
 
 
 # This is kept in sync with the value in 'platform/android/java/app/config.gradle'.
+# 26 (Android 8.0) is required for AHardwareBuffer_release(), used by the offscreen display
+# driver's export path on Android (see drivers/vulkan/rendering_device_driver_vulkan.cpp's
+# offscreen swap chain path).
 def get_min_target_api():
-    return 24
+    return 26
 
 
 def get_flags():
