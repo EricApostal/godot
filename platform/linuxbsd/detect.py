@@ -538,6 +538,12 @@ def configure(env: "SConsEnvironment"):
         if not env["builtin_glslang"]:
             # No pkgconfig file so far, hardcode expected lib name.
             env.Append(LIBS=["glslang", "SPIRV", "glslang-default-resource-limits"])
+        # Needed for drm_fourcc.h, used by the offscreen (dma-buf export) swap chain path.
+        if subprocess.run(["pkg-config", "--exists", "libdrm"], capture_output=True).returncode == 0:
+            env.ParseConfig("pkg-config libdrm --cflags")
+        else:
+            print_error("libdrm development libraries not found. Aborting.")
+            sys.exit(255)
 
     if env["opengl3"]:
         env.Append(CPPDEFINES=["GLES3_ENABLED"])

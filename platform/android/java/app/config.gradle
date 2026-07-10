@@ -4,7 +4,7 @@ ext.versions = [
     // Also update:
     // - 'platform/android/export/export_plugin.cpp#DEFAULT_MIN_SDK_VERSION'
     // - 'platform/android/detect.py#get_min_target_api()'
-    minSdk             : 24,
+    minSdk             : 26,
     // Also update 'platform/android/export/export_plugin.cpp#DEFAULT_TARGET_SDK_VERSION'
     targetSdk          : 36,
     buildTools         : '36.1.0',
