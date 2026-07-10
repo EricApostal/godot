@@ -3701,6 +3701,7 @@ void RenderingDeviceDriverVulkan::_swap_chain_release(SwapChain *swap_chain) {
 		for (VkDeviceMemory memory : swap_chain->offscreen_memories) {
 			vkFreeMemory(vk_device, memory, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_DEVICE_MEMORY));
 		}
+#if defined(LINUXBSD_ENABLED) || defined(ANDROID_ENABLED) || defined(WINDOWS_ENABLED)
 		for (const RenderingContextDriverVulkan::OffscreenExportedSurface &exported : swap_chain->offscreen_exported) {
 #if defined(LINUXBSD_ENABLED)
 			if (exported.dmabuf_fd >= 0) {
@@ -3716,6 +3717,7 @@ void RenderingDeviceDriverVulkan::_swap_chain_release(SwapChain *swap_chain) {
 			}
 #endif
 		}
+#endif // LINUXBSD_ENABLED || ANDROID_ENABLED || WINDOWS_ENABLED
 	}
 	swap_chain->offscreen_memories.clear();
 	swap_chain->offscreen_exported.clear();

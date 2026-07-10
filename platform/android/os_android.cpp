@@ -32,6 +32,9 @@
 
 #include "dir_access_jandroid.h"
 #include "display_server_android.h"
+#ifdef VULKAN_ENABLED
+#include "display_server_android_offscreen.h"
+#endif
 #include "file_access_filesystem_jandroid.h"
 #include "java_godot_io_wrapper.h"
 #include "java_godot_wrapper.h"
@@ -940,6 +943,9 @@ OS_Android::OS_Android(GodotJavaWrapper *p_godot_java, GodotIOJavaWrapper *p_god
 	AudioDriverManager::add_driver(&audio_driver_android);
 
 	DisplayServerAndroid::register_android_driver();
+#ifdef VULKAN_ENABLED
+	DisplayServerAndroidOffscreen::register_offscreen_driver();
+#endif
 }
 
 Error OS_Android::execute(const String &p_path, const List<String> &p_arguments, String *r_pipe, int *r_exitcode, bool read_stderr, Mutex *p_pipe_mutex, bool p_open_console) {

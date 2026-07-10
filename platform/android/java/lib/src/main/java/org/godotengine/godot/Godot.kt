@@ -38,6 +38,7 @@ import android.content.res.Configuration
 import android.content.res.Resources
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
+import android.hardware.HardwareBuffer
 import android.hardware.Sensor
 import android.hardware.SensorManager
 import android.os.*
@@ -855,6 +856,14 @@ class Godot private constructor(val context: Context) {
 			plugin.onGodotMainLoopStarted()
 		}
 		primaryHost?.onGodotMainLoopStarted()
+	}
+
+	/**
+	 * Invoked when a new frame rendered by the `offscreen` display driver is available. See
+	 * [GodotHost.onOffscreenFrameAvailable].
+	 */
+	internal fun onOffscreenFrameAvailable(buffer: HardwareBuffer, width: Int, height: Int) {
+		primaryHost?.onOffscreenFrameAvailable(buffer, width, height)
 	}
 
 	/**

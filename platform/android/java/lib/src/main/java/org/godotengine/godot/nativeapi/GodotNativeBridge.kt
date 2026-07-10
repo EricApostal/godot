@@ -36,6 +36,7 @@ import android.content.Context
 import android.content.DialogInterface
 import android.content.Intent
 import android.content.res.Configuration
+import android.hardware.HardwareBuffer
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -91,6 +92,13 @@ internal class GodotNativeBridge(private val godot: Godot) {
 	 * Invoked on the render thread when the engine is about to terminate.
 	 */
 	private fun onGodotTerminating() = godot.onGodotTerminating()
+
+	/**
+	 * Invoked when a new frame rendered by the `offscreen` display driver is available.
+	 */
+	private fun onOffscreenFrameAvailable(buffer: HardwareBuffer, width: Int, height: Int) {
+		godot.onOffscreenFrameAvailable(buffer, width, height)
+	}
 
 	/**
 	 * Invoked from the render thread to toggle the immersive mode.

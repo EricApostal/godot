@@ -120,6 +120,42 @@ private:
 	// Debug marker extensions.
 	VkDebugReportObjectTypeEXT _convert_to_debug_report_objectType(VkObjectType p_object_type);
 
+public:
+	// Describes the platform-native handle produced by exporting an offscreen ring slot's
+	// VkImage memory. Only one of these shapes is ever compiled in for a given build, matching
+	// which platform's external memory extension RenderingDeviceDriverVulkan used to export it
+	// (see the offscreen swap chain path in drivers/vulkan/rendering_device_driver_vulkan.cpp).
+	struct OffscreenExportedSurface {
+#if defined(LINUXBSD_ENABLED)
+		// VK_EXT_external_memory_dma_buf. Valid only for the duration of the callback unless
+		// the host dup()s it (e.g. implicitly, by importing into EGL/Vulkan).
+		int dmabuf_fd = -1;
+		uint32_t drm_format = 0; // DRM fourcc, see drm_fourcc.h.
+		uint32_t stride = 0;
+		uint32_t offset = 0;
+		uint64_t modifier = 0;
+#elif defined(ANDROID_ENABLED)
+		// VK_ANDROID_external_memory_android_hardware_buffer. Owned by the engine; the host
+		// must AHardwareBuffer_acquire() it to keep using it past the callback.
+		void *hardware_buffer = nullptr; // AHardwareBuffer *
+#elif defined(WINDOWS_ENABLED)
+		// VK_KHR_external_memory_win32, opened on the host side as a D3D11 shared texture.
+		// Unlike the other platforms, the host must explicitly synchronize: acquire the paired
+		// keyed mutex with `fence_value` as the key before reading.
+		void *shared_handle = nullptr; // HANDLE
+		uint64_t fence_value = 0;
+#endif
+	};
+
+	// Invoked once a frame rendered into an offscreen surface's ring buffer is ready for the
+	// host application to consume. See RenderingDeviceDriverVulkan's offscreen swap chain path
+	// (drivers/vulkan/rendering_device_driver_vulkan.cpp) for what "ready" means on each
+	// platform — on Linux (dmabuf) and Android (AHardwareBuffer) this fires as soon as the GPU
+	// work is submitted, relying on the platform's implicit buffer fencing for safety rather
+	// than the engine waiting for completion; on Windows the host must explicitly acquire the
+	// keyed mutex described in OffscreenExportedSurface before reading.
+	typedef void (*OffscreenPresentCallback)(void *p_userdata, const OffscreenExportedSurface *p_surface, uint32_t p_width, uint32_t p_height);
+
 protected:
 	Error _find_validation_layers(TightLocalVector<const char *> &r_layer_names) const;
 
@@ -171,41 +207,6 @@ public:
 	virtual bool is_debug_utils_enabled() const override;
 	virtual bool is_colorspace_externally_managed() const { return false; }
 	bool is_colorspace_supported() const;
-
-	// Describes the platform-native handle produced by exporting an offscreen ring slot's
-	// VkImage memory. Only one of these shapes is ever compiled in for a given build, matching
-	// which platform's external memory extension RenderingDeviceDriverVulkan used to export it
-	// (see the offscreen swap chain path in drivers/vulkan/rendering_device_driver_vulkan.cpp).
-	struct OffscreenExportedSurface {
-#if defined(LINUXBSD_ENABLED)
-		// VK_EXT_external_memory_dma_buf. Valid only for the duration of the callback unless
-		// the host dup()s it (e.g. implicitly, by importing into EGL/Vulkan).
-		int dmabuf_fd = -1;
-		uint32_t drm_format = 0; // DRM fourcc, see drm_fourcc.h.
-		uint32_t stride = 0;
-		uint32_t offset = 0;
-		uint64_t modifier = 0;
-#elif defined(ANDROID_ENABLED)
-		// VK_ANDROID_external_memory_android_hardware_buffer. Owned by the engine; the host
-		// must AHardwareBuffer_acquire() it to keep using it past the callback.
-		void *hardware_buffer = nullptr; // AHardwareBuffer *
-#elif defined(WINDOWS_ENABLED)
-		// VK_KHR_external_memory_win32, opened on the host side as a D3D11 shared texture.
-		// Unlike the other platforms, the host must explicitly synchronize: acquire the paired
-		// keyed mutex with `fence_value` as the key before reading.
-		void *shared_handle = nullptr; // HANDLE
-		uint64_t fence_value = 0;
-#endif
-	};
-
-	// Invoked once a frame rendered into an offscreen surface's ring buffer is ready for the
-	// host application to consume. See RenderingDeviceDriverVulkan's offscreen swap chain path
-	// (drivers/vulkan/rendering_device_driver_vulkan.cpp) for what "ready" means on each
-	// platform — on Linux (dmabuf) and Android (AHardwareBuffer) this fires as soon as the GPU
-	// work is submitted, relying on the platform's implicit buffer fencing for safety rather
-	// than the engine waiting for completion; on Windows the host must explicitly acquire the
-	// keyed mutex described in OffscreenExportedSurface before reading.
-	typedef void (*OffscreenPresentCallback)(void *p_userdata, const OffscreenExportedSurface *p_surface, uint32_t p_width, uint32_t p_height);
 
 	// Vulkan-only methods.
 	struct Surface {
