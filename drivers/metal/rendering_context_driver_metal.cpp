@@ -540,7 +540,6 @@ public:
 		uint32_t frame_height = height;
 		RenderingContextDriverMetal::OffscreenPresentCallback callback = present_callback;
 		void *userdata = present_userdata;
-		MDFrameBuffer *frame_buffer = &frame_buffers[idx];
 
 		// The completion handler runs asynchronously and may fire after a concurrent resize()
 		// has released `surface`, so keep our own reference alive until the handler runs.
@@ -548,8 +547,7 @@ public:
 			CFRetain(surface);
 		}
 
-		p_cmd_buffer->get_command_buffer()->addCompletedHandler([frame_buffer, surface, frame_width, frame_height, callback, userdata](MTL::CommandBuffer *) {
-			frame_buffer->unset_texture(0);
+		p_cmd_buffer->get_command_buffer()->addCompletedHandler([surface, frame_width, frame_height, callback, userdata](MTL::CommandBuffer *) {
 			if (surface) {
 				if (callback) {
 					callback(userdata, surface, frame_width, frame_height);
