@@ -35,6 +35,10 @@
 // It deliberately never touches the GDExtension/Variant ABI: everything it needs is exposed
 // as plain C functions in libgodot.h (see libgodot_godot_instance_start(),
 // libgodot_godot_instance_iteration(), and libgodot_godot_instance_set_offscreen_frame_callback()).
+// This matters beyond convenience: GodotInstance::start()/iteration() aren't exported with
+// default visibility from the shared library, so linking against them directly as C++ symbols
+// doesn't work even for an in-tree host — and a non-C++ FFI host (e.g. Dart) couldn't call a
+// C++ method at all regardless. libgodot.h's plain C wrappers are the only real entry point.
 
 #import <Cocoa/Cocoa.h>
 #import <IOSurface/IOSurface.h>

@@ -28,7 +28,7 @@ android_files = [
     "jni_utils.cpp",
     "android_keys_utils.cpp",
     "display_server_android.cpp",
-    "display_server_android_offscreen.cpp",
+    "libgodot_android.cpp",
     "plugin/godot_plugin_jni.cpp",
     "rendering_context_driver_vulkan_android.cpp",
     "variant/callable_jni.cpp",

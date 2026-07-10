@@ -12,7 +12,6 @@ files = [
     "crash_handler_macos.mm",
     "display_server_macos_base.mm",
     "display_server_macos.mm",
-    "display_server_macos_offscreen.mm",
     "godot_button_view.mm",
     "godot_content_view.mm",
     "godot_core_cursor.mm",

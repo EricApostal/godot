@@ -74,8 +74,12 @@ LIBGODOT_API void libgodot_destroy_godot_instance(GDExtensionObjectPtr p_godot_i
  * @name libgodot_godot_instance_start
  * @since 4.6
  *
- * Convenience wrapper around GodotInstance::start(), for callers who don't want to talk to
- * the GDExtension/Variant ABI just to drive the instance's lifecycle.
+ * Convenience wrapper around GodotInstance::start(). GodotInstance::start()/iteration() are
+ * ClassDB-bound methods reachable through the raw GDExtension object-call ABI in principle, but
+ * that requires marshaling GDExtensionVariantPtr/StringName buffers by hand — not just
+ * inconvenient but outright unusable from a host language whose FFI can only call plain C
+ * functions (e.g. Dart FFI), which can't call C++ methods at all. This wrapper exists so those
+ * hosts have a real entry point.
  *
  * @param p_godot_instance The GodotInstance object returned by \ref libgodot_create_godot_instance.
  *
@@ -89,7 +93,8 @@ LIBGODOT_API GDExtensionBool libgodot_godot_instance_start(GDExtensionObjectPtr 
  *
  * Convenience wrapper around GodotInstance::iteration(). Runs a single iteration of a
  * previously started instance's main loop; the caller is expected to call this repeatedly
- * (e.g. from a display link or timer) to keep the engine running.
+ * (e.g. from a display link or timer) to keep the engine running. See the note on \ref
+ * libgodot_godot_instance_start for why this wrapper exists.
  *
  * @param p_godot_instance The GodotInstance object returned by \ref libgodot_create_godot_instance.
  *
@@ -185,8 +190,8 @@ typedef void (*GodotOffscreenFrameCallback)(void *p_userdata, const GodotOffscre
  * @name libgodot_godot_instance_set_offscreen_frame_callback
  * @since 4.6
  *
- * Convenience wrapper around DisplayServer::offscreen_set_frame_available_callback(), for
- * callers who don't want to talk to the GDExtension/Variant ABI just to receive frames from
+ * Convenience wrapper around the active RenderingOffscreenTarget's set_frame_available_callback(),
+ * for callers who don't want to talk to the GDExtension/Variant ABI just to receive frames from
  * the "offscreen" display driver (see `--offscreen` in \ref libgodot_create_godot_instance).
  *
  * Only meaningful once the instance has been started and is running the "offscreen" display

@@ -55,7 +55,7 @@
 #endif
 
 #ifdef VULKAN_ENABLED
-#include "display_server_linuxbsd_offscreen.h"
+#include "servers/display/display_server_offscreen.h"
 #endif
 
 #include "modules/modules_enabled.gen.h" // For regex.
@@ -1317,7 +1317,7 @@ OS_LinuxBSD::OS_LinuxBSD() {
 #endif
 
 #ifdef VULKAN_ENABLED
-	DisplayServerLinuxBSDOffscreen::register_offscreen_driver();
+	DisplayServerOffscreen::register_offscreen_driver();
 #endif
 
 #ifdef FONTCONFIG_ENABLED

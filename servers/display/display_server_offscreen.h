@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  display_server_macos_offscreen.h                                     */
+/*  display_server_offscreen.h                                           */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -30,23 +30,25 @@
 
 #pragma once
 
-#include "display_server_macos_base.h"
-
 #include "core/os/mutex.h"
-
-#include <IOSurface/IOSurfaceRef.h>
+#include "servers/display/display_server.h"
+#include "servers/rendering/rendering_offscreen_target.h"
 
 class InputEvent;
-class NativeMenu;
+class RenderingContextDriver;
+class RenderingDevice;
 
-/// Renders offscreen into a native GPU surface (IOSurface on macOS) instead of owning a
-/// window, so Godot's output can be embedded into a host application's own view/render
-/// hierarchy via libgodot. Selected with the `offscreen` display driver (`--offscreen` on
-/// the command line, or via `--display-driver offscreen`).
-class DisplayServerMacOSOffscreen : public DisplayServerMacOSBase {
-	GDSOFTCLASS(DisplayServerMacOSOffscreen, DisplayServerMacOSBase)
-
-	NativeMenu *native_menu = nullptr;
+// One generic DisplayServer for the "offscreen" driver, shared by every platform. Godot never
+// owns a real window, CALayer, ANativeWindow, HWND, or any other windowing-system surface;
+// rendering happens into a RenderingOffscreenTarget (servers/rendering/rendering_offscreen_target.h),
+// which exports each frame as a native, OS-level shareable GPU buffer handle (see that file for
+// details) so a host application (e.g. via libgodot) can consume it directly.
+//
+// Since there's no real window, this doesn't implement clipboard/IME/native-menu/multi-screen/
+// mouse-cursor-rendering — a host is expected to feed input via `Input.parse_input_event()`
+// directly and to own any cursor/clipboard/IME UI itself.
+class DisplayServerOffscreen : public DisplayServer {
+	GDSOFTCLASS(DisplayServerOffscreen, DisplayServer)
 
 	HashMap<DisplayServerEnums::WindowID, ObjectID> window_attached_instance_id;
 
@@ -55,33 +57,33 @@ class DisplayServerMacOSOffscreen : public DisplayServerMacOSBase {
 	HashMap<DisplayServerEnums::WindowID, Callable> input_event_callbacks;
 	HashMap<DisplayServerEnums::WindowID, Callable> input_text_callbacks;
 
+	Ref<RenderingOffscreenTarget> offscreen_target;
+	RenderingContextDriver *rendering_context = nullptr;
+	RenderingDevice *rendering_device = nullptr;
+
 	String rendering_driver;
 
 	bool transparent = false;
 	Size2i window_size;
 
-	HDROutput hdr_output;
+	DisplayServerEnums::CursorShape cursor_shape = DisplayServerEnums::CURSOR_ARROW;
 
-	HDROutput &_get_hdr_output(DisplayServerEnums::WindowID p_window) override;
-	const HDROutput &_get_hdr_output(DisplayServerEnums::WindowID p_window) const override;
+	static void _dispatch_input_events(const Ref<InputEvent> &p_event);
 
-	void _mouse_apply_mode(DisplayServerEnums::MouseMode p_prev_mode, DisplayServerEnums::MouseMode p_new_mode) override;
-
-	Callable frame_available_callback;
-
-	// Frames are produced on a Metal-owned thread (command buffer completion handlers), so
-	// the most recent one is captured here and forwarded to `frame_available_callback` from
-	// `process_events()`, which always runs on the main thread.
-	Mutex pending_frame_mutex;
-	bool has_pending_frame = false;
-	uint32_t pending_iosurface_id = 0;
-	uint32_t pending_width = 0;
-	uint32_t pending_height = 0;
-
-	static void _offscreen_present_callback(void *p_userdata, IOSurfaceRef p_surface, uint32_t p_width, uint32_t p_height);
-	void _deliver_pending_frame();
+	// The DisplayServer::CreateFunction signature (servers/display/display_server.h) has no
+	// room for extra constructor parameters, so the host stashes the RenderingOffscreenTarget
+	// it constructed here immediately before triggering DisplayServer::create() (see e.g.
+	// platform/macos/libgodot_macos.mm); create_func() below reads and clears it.
+	static Ref<RenderingOffscreenTarget> _pending_offscreen_target;
 
 public:
+	static void set_offscreen_target(const Ref<RenderingOffscreenTarget> &p_offscreen_target);
+
+	// Lets the libgodot C API (core/extension/libgodot_helpers.h) reach the RenderingOffscreenTarget
+	// a host registered a frame callback on, without the host needing to keep its own reference
+	// to the Ref<> it constructed and passed to set_offscreen_target() earlier.
+	Ref<RenderingOffscreenTarget> get_offscreen_target() const { return offscreen_target; }
+
 	static void register_offscreen_driver();
 	static DisplayServer *create_func(const String &p_rendering_driver, DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, DisplayServerEnums::Context p_context, int64_t p_parent_window, Error &r_error);
 	static Vector<String> get_rendering_drivers_func();
@@ -96,10 +98,9 @@ public:
 	virtual void window_set_input_text_callback(const Callable &p_callable, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
 	virtual void window_set_drop_files_callback(const Callable &p_callable, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
 
-	static void _dispatch_input_events(const Ref<InputEvent> &p_event);
 	void send_input_event(const Ref<InputEvent> &p_event, DisplayServerEnums::WindowID p_id = DisplayServerEnums::MAIN_WINDOW_ID) const;
 	void send_input_text(const String &p_text, DisplayServerEnums::WindowID p_id = DisplayServerEnums::MAIN_WINDOW_ID) const;
-	virtual void send_window_event_by_id(DisplayServerEnums::WindowEvent p_event, DisplayServerEnums::WindowID p_id = DisplayServerEnums::MAIN_WINDOW_ID) const override;
+	void send_window_event_by_id(DisplayServerEnums::WindowEvent p_event, DisplayServerEnums::WindowID p_id = DisplayServerEnums::MAIN_WINDOW_ID) const;
 	void _window_callback(const Callable &p_callable, const Variant &p_arg) const;
 
 	// MARK: - Offscreen frame delivery
@@ -118,11 +119,12 @@ public:
 	virtual String get_name() const override;
 
 	virtual int get_screen_count() const override;
+	virtual int get_primary_screen() const override;
 	virtual Point2i screen_get_position(int p_screen = DisplayServerEnums::SCREEN_OF_MAIN_WINDOW) const override;
 	virtual Size2i screen_get_size(int p_screen = DisplayServerEnums::SCREEN_OF_MAIN_WINDOW) const override;
 	virtual Rect2i screen_get_usable_rect(int p_screen = DisplayServerEnums::SCREEN_OF_MAIN_WINDOW) const override;
 	virtual int screen_get_dpi(int p_screen = DisplayServerEnums::SCREEN_OF_MAIN_WINDOW) const override;
-	virtual float screen_get_scale(int p_screen = DisplayServerEnums::SCREEN_OF_MAIN_WINDOW) const override;
+	virtual float screen_get_refresh_rate(int p_screen = DisplayServerEnums::SCREEN_OF_MAIN_WINDOW) const override;
 	virtual Vector<DisplayServerEnums::WindowID> get_window_list() const override;
 
 	virtual DisplayServerEnums::WindowID get_window_at_screen_position(const Point2i &p_position) const override;
@@ -160,8 +162,6 @@ public:
 	virtual bool window_get_flag(DisplayServerEnums::WindowFlags p_flag, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override;
 
 	virtual void window_request_attention(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
-	virtual void window_set_taskbar_progress_value(float p_value, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
-	virtual void window_set_taskbar_progress_state(DisplayServerEnums::ProgressState p_state, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
 	virtual void window_move_to_foreground(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
 	virtual bool window_is_focused(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override;
 
@@ -171,19 +171,20 @@ public:
 
 	virtual bool can_any_window_draw() const override;
 
+	// No-op overrides purely to avoid the base DisplayServer's default WARN_PRINT spam for
+	// operations the engine may invoke unconditionally during normal use (e.g. Control nodes
+	// setting a cursor shape) even though this driver has no window to apply them to; a host
+	// is expected to own cursor/IME UI itself (see the class comment above).
 	virtual void window_set_ime_active(const bool p_active, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
 	virtual void window_set_ime_position(const Point2i &p_pos, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
-
-	virtual void window_set_vsync_mode(DisplayServerEnums::VSyncMode p_vsync_mode, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
-	virtual DisplayServerEnums::VSyncMode window_get_vsync_mode(DisplayServerEnums::WindowID p_vsync_mode) const override;
-
 	virtual void cursor_set_shape(DisplayServerEnums::CursorShape p_shape) override;
 	virtual void cursor_set_custom_image(const Ref<Resource> &p_cursor, DisplayServerEnums::CursorShape p_shape = DisplayServerEnums::CURSOR_ARROW, const Vector2 &p_hotspot = Vector2()) override;
 
-	void window_get_edr_values(DisplayServerEnums::WindowID p_window, CGFloat *r_max_potential_edr_value, CGFloat *r_max_edr_value) const override;
+	virtual void window_set_vsync_mode(DisplayServerEnums::VSyncMode p_vsync_mode, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
+	virtual DisplayServerEnums::VSyncMode window_get_vsync_mode(DisplayServerEnums::WindowID p_window) const override;
 
 	virtual void swap_buffers() override;
 
-	DisplayServerMacOSOffscreen(const String &p_rendering_driver, DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, DisplayServerEnums::Context p_context, Error &r_error);
-	~DisplayServerMacOSOffscreen();
+	DisplayServerOffscreen(const String &p_rendering_driver, DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, DisplayServerEnums::Context p_context, const Ref<RenderingOffscreenTarget> &p_offscreen_target, Error &r_error);
+	~DisplayServerOffscreen();
 };

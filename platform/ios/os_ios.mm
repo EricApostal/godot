@@ -31,7 +31,8 @@
 #import "os_ios.h"
 
 #import "display_server_ios.h"
-#import "display_server_ios_offscreen.h"
+
+#include "servers/display/display_server_offscreen.h"
 
 #ifdef IOS_ENABLED
 
@@ -42,7 +43,7 @@ OS_IOS *OS_IOS::get_singleton() {
 OS_IOS::OS_IOS() :
 		OS_AppleEmbedded() {
 	DisplayServerIOS::register_ios_driver();
-	DisplayServerIOSOffscreen::register_offscreen_driver();
+	DisplayServerOffscreen::register_offscreen_driver();
 }
 
 OS_IOS::~OS_IOS() {}

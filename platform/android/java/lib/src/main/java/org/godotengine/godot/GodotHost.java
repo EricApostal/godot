@@ -34,7 +34,6 @@ import org.godotengine.godot.error.Error;
 import org.godotengine.godot.plugin.GodotPlugin;
 
 import android.app.Activity;
-import android.hardware.HardwareBuffer;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -148,17 +147,6 @@ public interface GodotHost {
 	default boolean supportsFeature(String featureTag) {
 		return false;
 	}
-
-	/**
-	 * Invoked when a new frame rendered by the {@code offscreen} display driver (see
-	 * {@code --offscreen} / {@code DisplayServerAndroidOffscreen}) is available. The underlying
-	 * native buffer is only guaranteed to be valid for the duration of this call; to use it past
-	 * that (e.g. handing it to an {@link android.media.ImageReader} or a
-	 * {@code SurfaceTexture} on another thread), keep this {@code buffer} object itself alive —
-	 * its reference count keeps the native buffer alive too — rather than extracting a raw
-	 * handle from it.
-	 */
-	default void onOffscreenFrameAvailable(@NonNull HardwareBuffer buffer, int width, int height) {}
 
 	/**
 	 * Invoked on the render thread when an editor workspace has been selected.

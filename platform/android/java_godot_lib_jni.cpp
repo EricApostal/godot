@@ -34,9 +34,6 @@
 #include "api/java_class_wrapper.h"
 #include "dir_access_jandroid.h"
 #include "display_server_android.h"
-#ifdef VULKAN_ENABLED
-#include "display_server_android_offscreen.h"
-#endif
 #include "file_access_android.h"
 #include "file_access_filesystem_jandroid.h"
 #include "java_godot_io_wrapper.h"
@@ -50,15 +47,19 @@
 
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
+#include "core/extension/godot_instance.h"
 #include "core/input/input.h"
 #include "core/os/main_loop.h"
 #include "core/os/os.h"
 #include "core/profiling/profiling.h"
-#include "core/variant/callable.h"
-#include "core/variant/dictionary.h"
 #include "main/main.h"
 #include "servers/camera/camera_server.h"
 #include "servers/rendering/rendering_server.h"
+
+#ifdef VULKAN_ENABLED
+#include "servers/display/display_server_offscreen.h"
+#include "servers/rendering/rendering_offscreen_target.h"
+#endif
 
 #ifndef XR_DISABLED
 #include "servers/xr/xr_server.h"
@@ -71,17 +72,21 @@
 #include <android/asset_manager_jni.h>
 #include <android/input.h>
 #include <android/native_window_jni.h>
+#include <cstring>
 #include <unistd.h>
-
-#ifdef VULKAN_ENABLED
-#include <android/hardware_buffer_jni.h>
-#endif
 
 static JavaClassWrapper *java_class_wrapper = nullptr;
 static OS_Android *os_android = nullptr;
 static AndroidInputHandler *input_handler = nullptr;
 static GodotJavaWrapper *godot_java = nullptr;
 static GodotIOJavaWrapper *godot_io_java = nullptr;
+
+// Non-null only when a host embedding Godot (see platform/android/libgodot_android.cpp) passed
+// a non-zero GDExtensionInitializationFunction pointer to Java_..._GodotLib_setup(). Exists
+// solely to reuse GodotInstance::initialize()'s extension-loading logic — its start()/
+// iteration() are never called, since GodotLib_step() below already drives Main::setup2()/
+// Main::start()/the main loop directly for Android's own JNI-based bootstrap.
+static GodotInstance *godot_instance = nullptr;
 
 enum StartupStep {
 	STEP_TERMINATED = -1,
@@ -122,6 +127,12 @@ static void _terminate(JNIEnv *env, bool p_restart = false) {
 		Main::cleanup();
 		delete os_android;
 	}
+	if (godot_instance) {
+		// Never started (see the comment on Java_..._GodotLib_setup()), so this only frees it;
+		// Main::cleanup() above already tore down what GodotInstance::stop() would otherwise.
+		memdelete(godot_instance);
+		godot_instance = nullptr;
+	}
 	if (godot_io_java) {
 		delete godot_io_java;
 	}
@@ -148,76 +159,9 @@ static void _terminate(JNIEnv *env, bool p_restart = false) {
 	}
 }
 
-#ifdef VULKAN_ENABLED
-namespace {
-// Bridges DisplayServerAndroidOffscreen::offscreen_set_frame_available_callback() (a generic,
-// Dictionary-based Callable, matching the shape used by the other offscreen platforms) to the
-// GodotHost.onOffscreenFrameAvailable() JNI callback, converting the raw AHardwareBuffer* into
-// a Java android.hardware.HardwareBuffer.
-class JNIOffscreenFrameCallable : public CallableCustom {
-public:
-	uint32_t hash() const override {
-		return 0;
-	}
-
-	String get_as_text() const override {
-		return "<native Android offscreen frame callback>";
-	}
-
-	static bool compare_equal(const CallableCustom *p_a, const CallableCustom *p_b) {
-		return p_a == p_b;
-	}
-
-	static bool compare_less(const CallableCustom *p_a, const CallableCustom *p_b) {
-		return p_a < p_b;
-	}
-
-	CompareEqualFunc get_compare_equal_func() const override {
-		return compare_equal;
-	}
-
-	CompareLessFunc get_compare_less_func() const override {
-		return compare_less;
-	}
-
-	// Not bound to any Object; see the identical override in
-	// core/extension/libgodot_helpers.h's OffscreenFrameCallableCustom for why this is needed.
-	bool is_valid() const override {
-		return true;
-	}
-
-	ObjectID get_object() const override {
-		return ObjectID();
-	}
-
-	void call(const Variant **p_arguments, int p_argcount, Variant &r_return_value, Callable::CallError &r_call_error) const override {
-		r_call_error.error = Callable::CallError::CALL_OK;
-		r_return_value = Variant();
-
-		if (p_argcount < 1 || p_arguments[0] == nullptr || p_arguments[0]->get_type() != Variant::DICTIONARY || godot_java == nullptr) {
-			return;
-		}
-
-		Dictionary frame_data = *p_arguments[0];
-		AHardwareBuffer *hardware_buffer = (AHardwareBuffer *)(uintptr_t)(int64_t)frame_data.get("hardware_buffer", 0);
-		if (hardware_buffer == nullptr) {
-			return;
-		}
-		int width = (int)(int64_t)frame_data.get("width", 0);
-		int height = (int)(int64_t)frame_data.get("height", 0);
-
-		JNIEnv *env = get_jni_env();
-		ERR_FAIL_NULL(env);
-		// Wraps (and internally acquires a reference to) hardware_buffer; released when the
-		// Java HardwareBuffer object returned here is garbage-collected/closed, independent of
-		// this local ref.
-		jobject java_hardware_buffer = AHardwareBuffer_toHardwareBuffer(env, hardware_buffer);
-		godot_java->on_offscreen_frame_available(env, java_hardware_buffer, width, height);
-		env->DeleteLocalRef(java_hardware_buffer);
-	}
-};
-} // namespace
-#endif // VULKAN_ENABLED
+GodotInstance *android_get_embedded_godot_instance() {
+	return godot_instance;
+}
 
 static String rendering_source_to_string(OS::RenderingSource p_source) {
 	switch (p_source) {
@@ -269,7 +213,7 @@ JNIEXPORT void JNICALL Java_org_godotengine_godot_GodotLib_ondestroy(JNIEnv *env
 	_terminate(env, false);
 }
 
-JNIEXPORT jboolean JNICALL Java_org_godotengine_godot_GodotLib_setup(JNIEnv *env, jclass clazz, jobjectArray p_cmdline, jobject p_godot_tts) {
+JNIEXPORT jboolean JNICALL Java_org_godotengine_godot_GodotLib_setup(JNIEnv *env, jclass clazz, jobjectArray p_cmdline, jobject p_godot_tts, jlong p_init_func) {
 	setup_android_thread();
 
 	const char **cmdline = nullptr;
@@ -294,6 +238,20 @@ JNIEXPORT jboolean JNICALL Java_org_godotengine_godot_GodotLib_setup(JNIEnv *env
 		}
 	}
 
+#ifdef VULKAN_ENABLED
+	// Whether the host passed `--offscreen`, same meaning as platform/macos/libgodot_macos.mm
+	// and friends. Just a string scan here — the actual RenderingOffscreenTarget (a
+	// GDCLASS/RefCounted Object) can't be constructed until core systems (StringName, ClassDB)
+	// are up, i.e. only after Main::setup() below succeeds, not before.
+	bool is_offscreen = false;
+	for (int i = 0; i < cmdlen; i++) {
+		if (cmdline[i] != nullptr && strcmp("--offscreen", cmdline[i]) == 0) {
+			is_offscreen = true;
+			break;
+		}
+	}
+#endif
+
 	Error err = Main::setup(OS_Android::ANDROID_EXEC_PATH, cmdlen, (char **)cmdline, false);
 	if (cmdline) {
 		if (j_cmdline) {
@@ -308,6 +266,30 @@ JNIEXPORT jboolean JNICALL Java_org_godotengine_godot_GodotLib_setup(JNIEnv *env
 	// Note: --help and --version return ERR_HELP, but this should be translated to 0 if exit codes are propagated.
 	if (err != OK) {
 		return false;
+	}
+
+#ifdef VULKAN_ENABLED
+	// DisplayServer::create() (which reads this) doesn't happen until Main::setup2() in
+	// GodotLib_step() below, so setting it here is still in time.
+	if (is_offscreen) {
+		Ref<RenderingOffscreenTarget> offscreen_target;
+		offscreen_target.instantiate();
+		DisplayServerOffscreen::set_offscreen_target(offscreen_target);
+	}
+#endif
+
+	// Loads a host's GDExtension (see platform/android/libgodot_android.cpp), when embedding
+	// Godot rather than running as a normal GodotActivity-based app/export (which never passes
+	// a non-zero p_init_func, so this is a no-op for the standard runtime). Only initialize()
+	// is used here — GodotInstance::start()/iteration() are never called, since GodotLib_step()
+	// below already drives Main::setup2()/Main::start()/the main loop directly.
+	if (p_init_func != 0) {
+		godot_instance = memnew(GodotInstance);
+		if (!godot_instance->initialize((GDExtensionInitializationFunction)p_init_func)) {
+			memdelete(godot_instance);
+			godot_instance = nullptr;
+			return false;
+		}
 	}
 
 	TTS_Android::setup(p_godot_tts);
@@ -328,8 +310,8 @@ JNIEXPORT void JNICALL Java_org_godotengine_godot_GodotLib_resize(JNIEnv *env, j
 			}
 			// See the comment in Java_org_godotengine_godot_GodotLib_step() about why this can't
 			// use DisplayServerAndroid::get_singleton() unconditionally: the offscreen driver
-			// (DisplayServerAndroidOffscreen) has no ANativeWindow/Surface, so GodotLib.resize()
-			// isn't expected to be called by a host using it, but guard anyway in case it is.
+			// (DisplayServerOffscreen) has no ANativeWindow/Surface, so GodotLib.resize() isn't
+			// expected to be called by a host using it, but guard anyway in case it is.
 			if (DisplayServerAndroid *dsa = Object::cast_to<DisplayServerAndroid>(DisplayServer::get_singleton())) {
 				dsa->reset_window();
 				dsa->notify_surface_changed(p_width, p_height);
@@ -377,11 +359,6 @@ JNIEXPORT jboolean JNICALL Java_org_godotengine_godot_GodotLib_step(JNIEnv *env,
 		// but for Godot purposes, the main thread is the one running the game loop
 		Main::setup2(false); // The logo is shown in the next frame otherwise we run into rendering issues
 		input_handler = new AndroidInputHandler();
-#ifdef VULKAN_ENABLED
-		if (DisplayServerAndroidOffscreen *dso = Object::cast_to<DisplayServerAndroidOffscreen>(DisplayServer::get_singleton())) {
-			dso->offscreen_set_frame_available_callback(Callable(memnew(JNIOffscreenFrameCallable)));
-		}
-#endif
 		step.increment();
 		return true;
 	}
@@ -416,10 +393,10 @@ JNIEXPORT jboolean JNICALL Java_org_godotengine_godot_GodotLib_step(JNIEnv *env,
 		step.increment();
 	}
 
-	// The active DisplayServer may be DisplayServerAndroidOffscreen instead of
-	// DisplayServerAndroid (see display_server_android_offscreen.h), which doesn't implement
-	// sensor processing, so this can't unconditionally use DisplayServerAndroid::get_singleton()
-	// (an unchecked static_cast<DisplayServerAndroid *>(DisplayServer::get_singleton())).
+	// The active DisplayServer may be DisplayServerOffscreen instead of DisplayServerAndroid
+	// (see servers/display/display_server_offscreen.h), which doesn't implement sensor
+	// processing, so this can't unconditionally use DisplayServerAndroid::get_singleton() (an
+	// unchecked static_cast<DisplayServerAndroid *>(DisplayServer::get_singleton())).
 	if (DisplayServerAndroid *dsa = Object::cast_to<DisplayServerAndroid>(DisplayServer::get_singleton())) {
 		dsa->process_accelerometer(accelerometer);
 		dsa->process_gravity(gravity);

@@ -76,7 +76,6 @@ GodotJavaWrapper::GodotJavaWrapper(JNIEnv *p_env, jobject p_godot_native_bridge)
 	_on_godot_setup_completed = p_env->GetMethodID(godot_native_bridge_class, "onGodotSetupCompleted", "()V");
 	_on_godot_main_loop_started = p_env->GetMethodID(godot_native_bridge_class, "onGodotMainLoopStarted", "()V");
 	_on_godot_terminating = p_env->GetMethodID(godot_native_bridge_class, "onGodotTerminating", "()V");
-	_on_offscreen_frame_available = p_env->GetMethodID(godot_native_bridge_class, "onOffscreenFrameAvailable", "(Landroid/hardware/HardwareBuffer;II)V");
 	_create_new_godot_instance = p_env->GetMethodID(godot_native_bridge_class, "createNewGodotInstance", "([Ljava/lang/String;)I");
 	_get_render_view = p_env->GetMethodID(godot_native_bridge_class, "getRenderView", "()Lorg/godotengine/godot/GodotRenderView;");
 	_begin_benchmark_measure = p_env->GetMethodID(godot_native_bridge_class, "nativeBeginBenchmarkMeasure", "(Ljava/lang/String;Ljava/lang/String;)V");
@@ -168,13 +167,6 @@ void GodotJavaWrapper::on_godot_terminating(JNIEnv *p_env) {
 		}
 		ERR_FAIL_NULL(p_env);
 		p_env->CallVoidMethod(godot_native_bridge, _on_godot_terminating);
-	}
-}
-
-void GodotJavaWrapper::on_offscreen_frame_available(JNIEnv *p_env, jobject p_hardware_buffer, int p_width, int p_height) {
-	if (_on_offscreen_frame_available) {
-		ERR_FAIL_NULL(p_env);
-		p_env->CallVoidMethod(godot_native_bridge, _on_offscreen_frame_available, p_hardware_buffer, p_width, p_height);
 	}
 }
 

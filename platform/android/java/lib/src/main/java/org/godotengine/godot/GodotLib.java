@@ -74,8 +74,12 @@ public class GodotLib {
 	/**
 	 * Invoked on the GL thread to complete setup for the Godot native layer logic.
 	 * @param p_cmdline Command line arguments used to configure Godot native layer components.
+	 * @param p_init_func Pointer to a host's GDExtensionInitializationFunction to load, or 0 for
+	 *                    none. Only meaningful for a host embedding Godot via libgodot (see
+	 *                    platform/android/libgodot_android.cpp); always 0 for the standard
+	 *                    GodotActivity/export runtime.
 	 */
-	public static native boolean setup(String[] p_cmdline, GodotTTS tts);
+	public static native boolean setup(String[] p_cmdline, GodotTTS tts, long p_init_func);
 
 	/**
 	 * Invoked on the GL thread when the underlying Android surface has changed size.

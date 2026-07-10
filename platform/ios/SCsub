@@ -11,7 +11,6 @@ ios_lib = [
     "device_metrics.mm",
     "display_layer_ios.mm",
     "display_server_ios.mm",
-    "display_server_ios_offscreen.mm",
     "godot_view_ios.mm",
     "libgodot_ios.mm",
     "main_ios.mm",

@@ -32,9 +32,10 @@
 
 // Shared implementation for the platform-agnostic parts of the libgodot.h convenience API
 // (libgodot_godot_instance_start/iteration/set_offscreen_frame_callback). These only forward
-// to already cross-platform engine APIs (GodotInstance, DisplayServer), so the logic doesn't
-// need to be duplicated per platform — but the *definitions* do need to live in each
-// platform's libgodot_<platform> source file rather than their own translation unit.
+// to already cross-platform engine APIs (GodotInstance, DisplayServerOffscreen,
+// RenderingOffscreenTarget), so the logic doesn't need to be duplicated per platform — but the
+// *definitions* do need to live in each platform's libgodot_<platform> source file rather than
+// their own translation unit.
 //
 // Why: libgodot_create_godot_instance()/libgodot_destroy_godot_instance() are implemented per
 // platform in files (e.g. platform/macos/libgodot_macos.mm) that are passed directly to the
@@ -57,6 +58,7 @@
 #include "core/variant/callable.h"
 #include "core/variant/dictionary.h"
 #include "servers/display/display_server.h"
+#include "servers/display/display_server_offscreen.h"
 
 namespace {
 
@@ -177,14 +179,17 @@ GDExtensionBool libgodot_godot_instance_iteration(GDExtensionObjectPtr p_godot_i
 void libgodot_godot_instance_set_offscreen_frame_callback(GDExtensionObjectPtr p_godot_instance, GodotOffscreenFrameCallback p_callback, void *p_userdata) {
 	ERR_FAIL_NULL(p_godot_instance);
 
-	DisplayServer *display_server = DisplayServer::get_singleton();
-	ERR_FAIL_NULL(display_server);
+	DisplayServerOffscreen *display_server = Object::cast_to<DisplayServerOffscreen>(DisplayServer::get_singleton());
+	ERR_FAIL_NULL_MSG(display_server, "libgodot_godot_instance_set_offscreen_frame_callback() requires the \"offscreen\" display driver to be active.");
+
+	Ref<RenderingOffscreenTarget> offscreen_target = display_server->get_offscreen_target();
+	ERR_FAIL_COND(offscreen_target.is_null());
 
 	if (p_callback == nullptr) {
-		display_server->offscreen_set_frame_available_callback(Callable());
+		offscreen_target->set_frame_available_callback(Callable());
 		return;
 	}
 
 	Callable callable = Callable(memnew(OffscreenFrameCallableCustom(p_callback, p_userdata)));
-	display_server->offscreen_set_frame_available_callback(callable);
+	offscreen_target->set_frame_available_callback(callable);
 }

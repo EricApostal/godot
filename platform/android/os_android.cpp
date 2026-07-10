@@ -33,7 +33,7 @@
 #include "dir_access_jandroid.h"
 #include "display_server_android.h"
 #ifdef VULKAN_ENABLED
-#include "display_server_android_offscreen.h"
+#include "servers/display/display_server_offscreen.h"
 #endif
 #include "file_access_filesystem_jandroid.h"
 #include "java_godot_io_wrapper.h"
@@ -944,7 +944,7 @@ OS_Android::OS_Android(GodotJavaWrapper *p_godot_java, GodotIOJavaWrapper *p_god
 
 	DisplayServerAndroid::register_android_driver();
 #ifdef VULKAN_ENABLED
-	DisplayServerAndroidOffscreen::register_offscreen_driver();
+	DisplayServerOffscreen::register_offscreen_driver();
 #endif
 }
 

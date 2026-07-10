@@ -32,8 +32,8 @@
 
 #import "dir_access_macos.h"
 #import "display_server_macos.h"
-#import "display_server_macos_offscreen.h"
 #import "godot_application.h"
+#import "servers/display/display_server_offscreen.h"
 #import "godot_application_delegate.h"
 
 #ifdef TOOLS_ENABLED
@@ -1292,7 +1292,7 @@ void OS_MacOS_Offscreen::run() {
 
 OS_MacOS_Offscreen::OS_MacOS_Offscreen(const char *p_execpath, int p_argc, char **p_argv) :
 		OS_MacOS(p_execpath, p_argc, p_argv) {
-	DisplayServerMacOSOffscreen::register_offscreen_driver();
+	DisplayServerOffscreen::register_offscreen_driver();
 }
 
 // MARK: - OS_MacOS_Embedded
