@@ -130,7 +130,9 @@ public class GodotFragment extends Fragment implements GodotHost {
 
 	private void performEngineInitialization() {
 		try {
-			if (!godot.initEngine(this, getCommandLine(), getHostPlugins(godot))) {
+			// initFunc=0: this is the standard GodotActivity/export runtime, not a libgodot host
+			// embedding Godot -- see Godot.initEngine()'s doc comment.
+			if (!godot.initEngine(this, getCommandLine(), getHostPlugins(godot), 0L)) {
 				throw new IllegalStateException("Unable to initialize Godot engine");
 			}
 

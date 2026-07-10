@@ -232,9 +232,16 @@ class Godot private constructor(val context: Context) {
 	 *
 	 * This must be followed by [onInitRenderView] to complete initialization of the engine.
 	 *
+	 * @param initFunc Pointer to a host's GDExtensionInitializationFunction to load, or 0 for
+	 *                 none (the standard GodotActivity/export runtime, and every existing caller
+	 *                 in this tree). Only meaningful for a host embedding Godot via libgodot --
+	 *                 see GodotLib.setup()'s doc comment and platform/android/libgodot_android.cpp.
+	 *                 Deliberately has no default: every call site should make an explicit choice
+	 *                 here rather than silently inherit one.
+	 *
 	 * @return false if initialization of the native layer fails, true otherwise.
 	 */
-	fun initEngine(host: GodotHost?, commandLineParams: List<String>, hostPlugins: Set<GodotPlugin> = Collections.emptySet()): Boolean {
+	fun initEngine(host: GodotHost?, commandLineParams: List<String>, hostPlugins: Set<GodotPlugin> = Collections.emptySet(), initFunc: Long): Boolean {
 		if (isNativeInitialized()) {
 			Log.d(TAG, "Engine already initialized")
 			return true
@@ -336,7 +343,7 @@ class Godot private constructor(val context: Context) {
 
 			if (nativeLayerInitializeCompleted && !nativeLayerSetupCompleted) {
 				Log.v(TAG, "Setting up native layer with params: $commandLine")
-				nativeLayerSetupCompleted = GodotLib.setup(commandLine.toTypedArray(), tts, 0L)
+				nativeLayerSetupCompleted = GodotLib.setup(commandLine.toTypedArray(), tts, initFunc)
 				if (!nativeLayerSetupCompleted) {
 					throw IllegalStateException("Unable to setup the Godot engine! Aborting...")
 				} else {
