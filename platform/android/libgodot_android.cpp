@@ -64,6 +64,13 @@
 #include "core/extension/libgodot.h"
 #include "core/extension/libgodot_helpers.h"
 
+// Unlike libgodot_godot_instance_start/iteration/set_offscreen_frame_callback (declared with
+// `extern "C"` linkage in libgodot.h, inherited here since libgodot_helpers.h defines rather
+// than redeclares them), this function has no prior declaration anywhere else in the tree — it
+// needs its own explicit extern "C" block, or it gets ordinary (name-mangled) C++ linkage and
+// is unreachable from a C/FFI caller (e.g. Dart's dart:ffi, which cannot call mangled symbols).
+extern "C" {
+
 /**
  * @name libgodot_android_get_godot_instance
  * @since 4.6
@@ -79,3 +86,5 @@
 LIBGODOT_API GDExtensionObjectPtr libgodot_android_get_godot_instance() {
 	return (GDExtensionObjectPtr)android_get_embedded_godot_instance();
 }
+
+} // extern "C"
